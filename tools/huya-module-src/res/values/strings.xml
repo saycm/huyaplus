@@ -4,7 +4,7 @@
     <string name="app_description">虎牙直播的广告过滤、默认清晰度和每日任务模块</string>
     <string name="dashboard_title">虎牙 plus</string>
     <string name="dashboard_subtitle">只为了干掉AD</string>
-    <string name="dashboard_version">v1.19</string>
+    <string name="dashboard_version">v1.20</string>
     <string name="status_checking">正在检测框架加载状态</string>
     <string name="status_ok">模块运行正常</string>
     <string name="status_loaded">LSPosed 已加载虎牙模块</string>
@@ -54,4 +54,12 @@
     <string name="community_discussion_handle">t.me/+fFxFjUupwRllYWM1</string>
     <string name="channel_url">https://t.me/+Gdwx4F3flrwzYzE1</string>
     <string name="discussion_url">https://t.me/+fFxFjUupwRllYWM1</string>
+    <string name="mine_settings_title">我的页面自定义</string>
+    <string name="navigation_settings_title">底栏与商城自定义</string>
+    <string name="mine_settings_hint">开启开关可隐藏对应入口。重新打开虎牙后查看效果。</string>
+    <string name="mine_settings_disconnected">LSPosed 未连接，连接后可以修改开关。</string>
+    <string name="mine_settings_save_failed">未能保存，请检查 LSPosed 连接后重试。</string>
+    <string name="mine_shortcuts">快捷入口</string>
+    <string name="mine_game_services">游戏服务</string>
+    <string name="mine_more_services">更多服务</string>
 </resources>

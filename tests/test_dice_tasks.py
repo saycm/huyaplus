@@ -71,15 +71,17 @@ public class DiceTasksTest {
   h.advance(300000);
   if(Arrays.asList("normal","duplicate","map-refresh").contains(test)){
    check(h.rolls==2,"free dice were not consumed exactly once");
-   check(h.sentAt.equals(Arrays.asList(30000L,90000L)),"roll interval not honored");
-   for(int i=1;i<h.allRequests.size();i++)check(h.allRequests.get(i)-h.allRequests.get(i-1)>=30000,
-      "query or roll request was sent before the configured interval");
+   check(h.sentAt.equals(Arrays.asList(0L,30000L)),"roll must follow verified stock without a second wait");
+   check(h.allRequests.equals(Arrays.asList(0L,0L,30000L,30000L,60000L)),
+      "each roll must be followed by a delayed stock check");
    check(h.logs.stream().filter(x->x.startsWith("成功:")).count()==2,"unconfirmed or duplicate success");
    new DiceTaskRunner(h,30000,()->{}).start(12,"2099-01-01");h.advance(600000);
    check(h.rolls==2,"same-day restart repeated rolls");
   }else if(Arrays.asList("timeout","denied").contains(test)){
    check(h.rolls==1,"failed request was retried");
    check(h.logs.stream().noneMatch(x->x.startsWith("成功:")),"failure reported success");
+  }else if(test.equals("account-change")){
+   check(h.rolls==1,"account change did not stop subsequent rolls");
   }else check(h.rolls==0,"disabled, invalid or empty task sent a roll");
   check(h.done==1,"completion callback did not run exactly once");
  }

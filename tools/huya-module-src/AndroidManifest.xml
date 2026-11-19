@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.saycm.huyaplus"
-    android:versionCode="20"
-    android:versionName="1.19">
+    android:versionCode="21"
+    android:versionName="1.20">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
     <queries>
         <package android:name="com.duowan.kiwi" />
@@ -35,6 +35,10 @@
             android:theme="@style/GlassDashboard" />
         <activity
             android:name=".TaskSettingsActivity"
+            android:exported="false"
+            android:theme="@style/GlassDashboard" />
+        <activity
+            android:name=".MineSettingsActivity"
             android:exported="false"
             android:theme="@style/GlassDashboard" />
         <provider

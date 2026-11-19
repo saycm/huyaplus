@@ -16,6 +16,7 @@ import java.util.TimeZone;
 import io.github.libxposed.api.XposedModule;
 
 final class NativeTaskAutomation {
+    private static final long DICE_CHECK_INTERVAL = 15 * 60 * 1000L;
     private final XposedModule module;
     private final SharedPreferences prefs;
     private final LocalTaskStore store;
@@ -251,7 +252,7 @@ final class NativeTaskAutomation {
                         running = true;
                         rollDice(account, date, interval, () -> {
                             running = false;
-                            handler.postDelayed(this, Math.max(60000L, interval));
+                            handler.postDelayed(this, DICE_CHECK_INTERVAL);
                         });
                         return;
                     }
@@ -259,11 +260,13 @@ final class NativeTaskAutomation {
                     log("每日投骰子", "未确认", "库存复核失败，本轮未投骰");
                     running = false;
                 }
-                handler.postDelayed(this, Math.max(60000L, interval));
+                handler.postDelayed(this, DICE_CHECK_INTERVAL);
             }
         };
-        handler.postDelayed(check, Math.max(60000L, interval));
+        handler.postDelayed(check, DICE_CHECK_INTERVAL);
     }
+
+    boolean isIdle() { return !running; }
 
     private static String currentDate() {
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT);

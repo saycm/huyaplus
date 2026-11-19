@@ -50,6 +50,13 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         return claimed;
     }
 
+    synchronized boolean hasClaim(String key) {
+        try (Cursor row = getReadableDatabase().rawQuery(
+                "SELECT 1 FROM runs WHERE run_key = ?", new String[]{key})) {
+            return row.moveToFirst();
+        }
+    }
+
     synchronized void append(String task, String target, String state, String detail) {
         SQLiteDatabase db = getWritableDatabase();
         ContentValues row = new ContentValues();

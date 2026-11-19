@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import io.github.libxposed.api.XposedModule;
 
 final class DailyAutomation {
+    private static final long GIFT_CHECK_INTERVAL = 30 * 60 * 1000L;
     static final String SYNC_LOGS = "io.github.saycm.huyaplus.SYNC_LOGS";
     private final XposedModule module;
     private final SharedPreferences prefs;
@@ -40,6 +41,7 @@ final class DailyAutomation {
     private final Set<String> seen = new HashSet<>();
     private final ArrayDeque<Long> badges = new ArrayDeque<>();
     private final ArrayDeque<Map.Entry<Long, Integer>> giftRooms = new ArrayDeque<>();
+    private final Set<Long> attemptedGiftRooms = new HashSet<>();
     private final Map<Object, GiftLimit> guardedGifts = Collections.synchronizedMap(new IdentityHashMap<>());
     private long grainBudget = -1;
     private boolean giftGuardInstalled;
@@ -161,10 +163,14 @@ final class DailyAutomation {
         return ((Number) loginType.getMethod("getUid").invoke(login)).longValue();
     }
 
-    private void runOnce(long uid) {
+    private static String dayKey(long uid) {
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT);
         format.setTimeZone(TimeZone.getTimeZone("Asia/Shanghai"));
-        String day = uid + "/" + format.format(new Date());
+        return uid + "/" + format.format(new Date());
+    }
+
+    private void runOnce(long uid) {
+        String day = dayKey(uid);
         if (!seen.add(day)) return;
         boolean sign = prefs != null && prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false);
         boolean gift = prefs != null && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false);
@@ -173,8 +179,7 @@ final class DailyAutomation {
             return;
         }
         boolean runSign = sign && claim("sign/" + day);
-        boolean runGift = gift && claim("gift/" + day);
-        if (!runSign && !runGift) {
+        if (!runSign && !gift) {
             log("每日任务", "", "跳过", "今日已触发过，防止重复执行；未确认结果请查看之前的日志");
             return;
         }
@@ -182,6 +187,8 @@ final class DailyAutomation {
         activeDay = day;
         badges.clear();
         giftRooms.clear();
+        attemptedGiftRooms.clear();
+        giftActive = false;
         requests.clear();
         for (GiftLimit limit : guardedGifts.values()) limit.blocked = true;
         grainBudget = -1;
@@ -198,8 +205,8 @@ final class DailyAutomation {
         try {
             installCallbacks();
             Runnable gifts = () -> {
-                if (runGift) beginGifts();
-                else log("免费虎粮", "", "跳过", gift ? "今日已触发过，不重复执行" : "功能未开启");
+                if (gift) checkGifts(uid, day);
+                else log("免费虎粮", "", "跳过", "功能未开启");
             };
             if (runSign) {
                 afterBadges = gifts;
@@ -447,13 +454,28 @@ final class DailyAutomation {
         }
     }
 
+    private void checkGifts(long uid, String day) {
+        if (!day.equals(activeDay) || !day.equals(dayKey(uid)) || !giftAllowed()) return;
+        long delay = GIFT_CHECK_INTERVAL;
+        try {
+            if (loggedInUid() != uid) return;
+            if (isIdle() && nativeTasks.isIdle()) beginGifts();
+            else delay = requestInterval;
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            log("免费虎粮", "", "失败", "库存检查未启动：" + failure.getClass().getSimpleName());
+        }
+        handler.postDelayed(() -> checkGifts(uid, day), delay);
+    }
+
     private void beginGifts() {
-        if (!prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false)) return;
         Map<Long, Integer> rooms = AutomationRules.parse(prefs.getString(GlassSettings.KEY_GIFT_ROOMS, ""));
         if (rooms.isEmpty()) log("免费虎粮", "", "跳过", "未配置直播间和数量");
         else {
+            for (Map.Entry<Long, Integer> room : rooms.entrySet()) {
+                if (!attemptedGiftRooms.contains(room.getKey())) giftRooms.add(room);
+            }
+            if (giftRooms.isEmpty()) return;
             giftActive = true;
-            giftRooms.addAll(rooms.entrySet());
             nextGiftRoom();
         }
     }
@@ -546,7 +568,13 @@ final class DailyAutomation {
                         handler.postDelayed(this::nextGiftRoom, 1200L);
                         return;
                     }
-                    fetchGrain(room.getKey(), ((Number) value(notice, "lPresenterUid")).longValue(), room.getValue());
+                    long presenter = ((Number) value(notice, "lPresenterUid")).longValue();
+                    if (diceGiftKey == null && store.hasClaim(dailyGiftKey(presenter))) {
+                        attemptedGiftRooms.add(room.getKey());
+                        handler.postDelayed(this::nextGiftRoom, 1200L);
+                        return;
+                    }
+                    fetchGrain(room.getKey(), presenter, room.getValue());
                 } catch (ReflectiveOperationException | RuntimeException failure) {
                     log("免费虎粮", target, "失败", "送礼接口不匹配，没有继续发送");
                     handler.postDelayed(this::nextGiftRoom, 1200L);
@@ -788,13 +816,14 @@ final class DailyAutomation {
         Method send = serviceType.getMethod("sendGiftCompat", params.getClass(), callbackType);
         Object giftService = service(serviceType.getName());
         if (giftService == null) throw new IllegalStateException("Gift service unavailable");
-        if (!claim(diceGiftKey == null ? "gift-send/" + activeDay + "/" + presenter
+        if (!claim(diceGiftKey == null ? dailyGiftKey(presenter)
                 : "dice-gift-send/" + activeDay + "/" + diceGiftKey)) {
             limit.blocked = true;
             log("免费虎粮", target, "跳过", "今日已经提交过该主播的赠送，不重复发送");
             handler.postDelayed(this::nextGiftRoom, 1200L);
             return;
         }
+        if (diceGiftKey == null) attemptedGiftRooms.add(room);
         log("免费虎粮", target, "请求已发出", "仅使用背包免费库存，等待回执");
         send.invoke(giftService, params, callback);
         handler.postDelayed(() -> {
@@ -805,6 +834,10 @@ final class DailyAutomation {
                 log("免费虎粮", target, "结果未确认", "等待回执超时，停止后续赠送，不自动重发");
             }
         }, 30000L);
+    }
+
+    private String dailyGiftKey(long presenter) {
+        return "gift-send/" + activeDay + "/" + presenter;
     }
 
     private void skipRemainingGifts(String reason) {

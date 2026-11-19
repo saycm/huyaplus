@@ -102,6 +102,7 @@ final class LocalTaskStore {
  LocalTaskStore(Context context){this(context,null);}
  LocalTaskStore(Context context,Runnable onAppend){this.onAppend=onAppend;}
  boolean claim(String key){return ContentResolver.claims.add(key);}
+ boolean hasClaim(String key){return ContentResolver.claims.contains(key);}
  void append(String task,String target,String state,String detail){
   Bundle row=new Bundle();row.putString("task",task);row.putString("target",target);
   row.putString("state",state);row.putString("detail",detail);localEvents.add(row);

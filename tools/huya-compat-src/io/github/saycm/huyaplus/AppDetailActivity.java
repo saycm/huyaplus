@@ -42,6 +42,11 @@ public final class AppDetailActivity extends Activity {
         SystemBarInsets.apply(findViewById(android.R.id.content));
 
         findViewById(R.id.detail_back).setOnClickListener(view -> finish());
+        findViewById(R.id.action_mine_settings).setOnClickListener(view ->
+                startActivity(new Intent(this, MineSettingsActivity.class)));
+        findViewById(R.id.action_navigation_settings).setOnClickListener(view ->
+                startActivity(new Intent(this, MineSettingsActivity.class)
+                        .putExtra(MineSettingsActivity.SHOW_NAVIGATION, true)));
         automation = new AutomationPanel(this, (LinearLayout) findViewById(R.id.automation_settings));
 
         boolean installed = packageInstalled("com.duowan.kiwi");

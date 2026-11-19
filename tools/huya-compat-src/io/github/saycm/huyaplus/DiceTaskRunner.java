@@ -77,8 +77,7 @@ final class DiceTaskRunner {
                     + java.util.UUID.nameUUIDFromBytes(TaskWire.encode(
                             new TaskWire.Struct().field(1, mapId).field(2, pos)
                                     .field(3, max).field(4, remaining)));
-            host.log("等待", "剩余 " + remaining + " 次；等待 " + interval / 1000 + " 秒后投骰");
-            host.later(interval, () -> roll(request));
+            roll(request);
         });
     }
 

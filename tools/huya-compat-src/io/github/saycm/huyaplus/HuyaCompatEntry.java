@@ -1,9 +1,15 @@
 package io.github.saycm.huyaplus;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
-import android.content.SharedPreferences;
+import android.util.Pair;
+import android.view.View;
+import android.view.ViewParent;
+import android.widget.LinearLayout;
 
 import org.json.JSONObject;
 
@@ -12,10 +18,12 @@ import java.lang.reflect.Method;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
@@ -43,6 +51,8 @@ public final class HuyaCompatEntry extends XposedModule {
 
     private static Handler mainHandler;
     private final QualitySession qualitySession = new QualitySession();
+    private final Map<Object, GlassSettings.NavigationEntry> navigationItems = new WeakHashMap<>();
+    private final Map<View, Integer> hiddenNavigationViews = new WeakHashMap<>();
     private boolean hooksInitialized;
     private boolean activityLoaderHookInstalled;
     private SharedPreferences prefs;
@@ -128,6 +138,9 @@ public final class HuyaCompatEntry extends XposedModule {
         hooksInitialized = true;
         logInfo("initializing with activity loader " + classLoader);
         hookDefaultQuality(classLoader);
+        hookMinePage(classLoader);
+        hookNavigationVisibility(classLoader);
+        hookMallAiFloat(classLoader);
         boolean ads = isEnabled(GlassSettings.KEY_ADS);
         boolean liveCards = isEnabled(GlassSettings.KEY_LIVE_CARDS);
         boolean rewards = isEnabled(GlassSettings.KEY_REWARDS);
@@ -155,6 +168,250 @@ public final class HuyaCompatEntry extends XposedModule {
         if (vip4k) {
             hookVip4KPlayback(classLoader);
         }
+    }
+
+    private void hookNavigationVisibility(ClassLoader loader) {
+        try {
+            Class<?> helper = loader.loadClass("com.duowan.kiwi.list.homepage.HomepageTabHelper");
+            Class<?> tab = loader.loadClass("com.duowan.kiwi.homepage.IHomepageFragmentContainer$c");
+            Class<?> bar = loader.loadClass("com.duowan.kiwi.homepage.CustomBar");
+            Class<?> skin = loader.loadClass("com.duowan.yyprotocol.ResFile");
+            Method toBarItem = helper.getDeclaredMethod("k", tab);
+            Method init = bar.getDeclaredMethod("init", List.class, skin, ColorStateList.class, boolean.class);
+            Method update = bar.getDeclaredMethod("updateBarItem", List.class, int.class);
+            hook(toBarItem).intercept(chain -> {
+                Object item = chain.proceed();
+                // The helper sets h from HomeTab.getValue() before building the visual item.
+                GlassSettings.NavigationEntry entry = GlassSettings.NavigationEntry.forTab(
+                        field(chain.getArg(0), "h"));
+                if (item != null && entry != null) navigationItems.put(item, entry);
+                return item;
+            });
+            for (Method method : new Method[]{init, update}) {
+                hook(method).intercept(chain -> {
+                    Object result = chain.proceed();
+                    updateNavigationBar(chain.getThisObject(), chain.getArg(0));
+                    return result;
+                });
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void updateNavigationBar(Object bar, Object data) {
+        Object container = field(bar, "mTabContainer");
+        if (!(container instanceof LinearLayout) || !(data instanceof List)) return;
+        LinearLayout layout = (LinearLayout) container;
+        List<?> items = (List<?>) data;
+        if (layout.getChildCount() != items.size()) return;
+        boolean affected = false;
+        int visible = 0;
+        for (int index = 0; index < items.size(); index++) {
+            View child = layout.getChildAt(index);
+            GlassSettings.NavigationEntry entry = navigationItems.get(items.get(index));
+            affected |= setNavigationHidden(child, shouldHide(entry));
+            if (child.getVisibility() != View.GONE) visible++;
+        }
+        if (affected && visible > 0) layout.setWeightSum(visible);
+    }
+
+    private void hookMallAiFloat(ClassLoader loader) {
+        try {
+            Class<?> manager = loader.loadClass("com.facebook.react.uimanager.BaseViewManager");
+            Class<?> reactGroup = loader.loadClass("com.facebook.react.views.view.ReactViewGroup");
+            Class<?> reactRoot = loader.loadClass("com.facebook.react.ReactRootView");
+            Method moduleName = reactRoot.getMethod("getJSModuleName");
+            Method setNativeId = manager.getDeclaredMethod("setNativeId", View.class, String.class);
+            Method pointerEvents = reactGroup.getDeclaredMethod("getPointerEvents");
+            Object noPointerEvents = pointerEvents.getReturnType().getField("NONE").get(null);
+            hook(pointerEvents).intercept(chain -> hiddenNavigationViews.containsKey(chain.getThisObject())
+                    ? noPointerEvents : chain.proceed());
+            View.OnAttachStateChangeListener attach = new View.OnAttachStateChangeListener() {
+                @Override public void onViewAttachedToWindow(View view) {
+                    view.removeOnAttachStateChangeListener(this);
+                    updateMallAiFloat(view, reactRoot, moduleName);
+                }
+
+                @Override public void onViewDetachedFromWindow(View view) {
+                }
+            };
+            hook(setNativeId).intercept(chain -> {
+                Object result = chain.proceed();
+                if (!reactGroup.isInstance(chain.getArg(0))) return result;
+                View view = (View) chain.getArg(0);
+                // MallTab's FloatWindow renders its TouchableOpacity with a one-space nativeID.
+                if (" ".equals(chain.getArg(1)) && shouldHide(GlassSettings.NavigationEntry.MALL_AI_FLOAT)) {
+                    if (view.isAttachedToWindow()) updateMallAiFloat(view, reactRoot, moduleName);
+                    else {
+                        view.removeOnAttachStateChangeListener(attach);
+                        view.addOnAttachStateChangeListener(attach);
+                    }
+                } else if (hiddenNavigationViews.containsKey(view)) {
+                    setNavigationHidden(view, false);
+                } else if (!view.isAttachedToWindow()) {
+                    view.removeOnAttachStateChangeListener(attach);
+                }
+                return result;
+            });
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void updateMallAiFloat(View view, Class<?> reactRoot, Method moduleName) {
+        try {
+            for (ViewParent parent = view.getParent(); parent instanceof View; parent = parent.getParent()) {
+                if (reactRoot.isInstance(parent)) {
+                    setNavigationHidden(view, "MallTab".equals(moduleName.invoke(parent))
+                            && shouldHide(GlassSettings.NavigationEntry.MALL_AI_FLOAT));
+                    return;
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            logFailure(failure);
+        }
+    }
+
+    private boolean shouldHide(GlassSettings.NavigationEntry entry) {
+        return entry != null && prefs != null && prefs.getBoolean(entry.key, false);
+    }
+
+    private boolean setNavigationHidden(View view, boolean hidden) {
+        if (hidden) {
+            hiddenNavigationViews.putIfAbsent(view, view.getVisibility());
+            view.setVisibility(View.GONE);
+            return true;
+        }
+        Integer original = hiddenNavigationViews.remove(view);
+        if (original == null) return false;
+        view.setVisibility(original);
+        return true;
+    }
+
+    private void hookMinePage(ClassLoader loader) {
+        try {
+            Class<?> creator = loader.loadClass("com.duowan.kiwi.my.utils.MyTabModuleViewCreator");
+            Method render = creator.getDeclaredMethod("createByTemplateType", Context.class,
+                    loader.loadClass("com.duowan.HUYA.MyTabModuleInfo"));
+            hook(render).intercept(chain -> {
+                Object module = chain.getArg(1);
+                Object filtered = filterNativeMineModule(module);
+                if (filtered == null) return new Pair<>(false, null);
+                return filtered == module ? chain.proceed()
+                        : chain.proceed(new Object[]{chain.getArg(0), filtered});
+            });
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+        }
+        try {
+            Class<?> page = loader.loadClass("com.duowan.kiwi.my.MyRecordNew");
+            Method render = page.getDeclaredMethod("createLizardModuleView", Context.class,
+                    loader.loadClass("com.duowan.HUYA.DynamicItem"));
+            hook(render).intercept(chain -> {
+                Object module = chain.getArg(1);
+                if (module == null) return chain.proceed();
+                Object filtered = filterLizardMineModule(module);
+                if (filtered == null) return null;
+                return filtered == module ? chain.proceed()
+                        : chain.proceed(new Object[]{chain.getArg(0), filtered});
+            });
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+        }
+    }
+
+    private Object filterNativeMineModule(Object module) {
+        int group = GlassSettings.MineEntry.groupOf(text(field(module, "sId")), text(field(module, "sName")));
+        if (group < 0 || prefs == null) return module;
+        try {
+            List<?> primary = mineRows(field(module, "vItems"));
+            List<?> bottom = mineRows(field(module, "vBottomItems"));
+            List<?> keptPrimary = filterMineRows(primary, group, false);
+            List<?> keptBottom = filterMineRows(bottom, group, false);
+            if (primary == keptPrimary && bottom == keptBottom) return module;
+            if (keptPrimary.isEmpty() && keptBottom.isEmpty()
+                    && field(module, "tLeftItem") == null
+                    && field(module, "tGamePlayInfoModule") == null) return null;
+            Object filtered = copyMineModel(module);
+            if (primary != keptPrimary) module.getClass().getField("vItems").set(filtered, keptPrimary);
+            if (bottom != keptBottom) module.getClass().getField("vBottomItems").set(filtered, keptBottom);
+            return filtered;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+            return module;
+        }
+    }
+
+    private Object filterLizardMineModule(Object module) {
+        if (prefs == null || text(field(module, "sTemplateUrl")).trim().endsWith("MyTabSevenModule")) {
+            return module;
+        }
+        Object data = field(module, "tData");
+        Object payload = field(data, "mpObject");
+        if (!(payload instanceof Map)) return module;
+        Map<?, ?> values = (Map<?, ?>) payload;
+        int group = GlassSettings.MineEntry.groupOf(mineDynamicId(values.get("id")),
+                text(field(values.get("name"), "sString")));
+        if (group < 0) return module;
+        try {
+            Object items = values.get("items");
+            List<?> primary = mineRows(field(items, "vArray"));
+            List<?> kept = filterMineRows(primary, group, true);
+            if (primary == kept) return module;
+            if (kept.isEmpty()) return null;
+            Object copiedItems = copyMineModel(items);
+            items.getClass().getField("vArray").set(copiedItems, kept);
+            Map<Object, Object> copiedValues = new LinkedHashMap<>(values);
+            copiedValues.put("items", copiedItems);
+            Object copiedData = copyMineModel(data);
+            data.getClass().getField("mpObject").set(copiedData, copiedValues);
+            Object filtered = copyMineModel(module);
+            module.getClass().getField("tData").set(filtered, copiedData);
+            return filtered;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+            return module;
+        }
+    }
+
+    private List<?> filterMineRows(List<?> rows, int group, boolean lizard) {
+        ArrayList<Object> kept = new ArrayList<>(rows.size());
+        GlassSettings.MineEntry[] entries = GlassSettings.MineEntry.values();
+        for (Object row : rows) {
+            Object payload = lizard ? field(row, "mpObject") : null;
+            Map<?, ?> item = payload instanceof Map ? (Map<?, ?>) payload : Collections.emptyMap();
+            String id = lizard ? mineDynamicId(item.get("id")) : text(field(row, "sId"));
+            String title = text(lizard ? field(item.get("title"), "sString") : field(row, "sTitle")).trim();
+            boolean hide = false;
+            for (GlassSettings.MineEntry entry : entries) {
+                if (entry.matches(group, id, title) && prefs.getBoolean(entry.key, false)) {
+                    hide = true;
+                    break;
+                }
+            }
+            if (!hide) kept.add(row);
+        }
+        return kept.size() == rows.size() ? rows : kept;
+    }
+
+    private static List<?> mineRows(Object rows) {
+        return rows instanceof List ? (List<?>) rows : Collections.emptyList();
+    }
+
+    private static String mineDynamicId(Object value) {
+        String id = text(field(value, "sString"));
+        return id.isEmpty() ? text(field(value, "lIntegar")) : id;
+    }
+
+    private static Object copyMineModel(Object model) throws ReflectiveOperationException {
+        Object copy = model.getClass().getMethod("clone").invoke(model);
+        if (copy == null || copy == model) throw new IllegalStateException("Cannot copy Mine page data");
+        return copy;
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : value.toString();
     }
 
     private boolean isEnabled(String key) {

@@ -13,6 +13,45 @@ class TaskSequenceTest(unittest.TestCase):
         sources = dict(DAILY_SOURCES)
         sources["android/os/Handler.java"] = sources["android/os/Handler.java"].replace(
             "static long now;", "public static long now;")
+        sources["ryxq/TestServer.java"] = sources["ryxq/TestServer.java"].replace(
+            "int lists,signs", "int lists,signs,grainChecks")
+        sources["com/duowan/HUYA/GetUserCardPackageReq.java"] = """
+package com.duowan.HUYA;
+public class GetUserCardPackageReq {
+ public UserId tId;public long lPid,lHomeOwnerUid;public int eTempleteType,eSource;
+}"""
+        for name, field in (("mfg", "d"), ("nh3", "f")):
+            sources[f"ryxq/{name}.java"] = f"""
+package ryxq;
+public class {name} {{
+ public static final {name} {field}=new {name}();
+ public int a(){{return 1;}}
+}}"""
+        path = "com/duowan/biz/wup/gamelive/GameLiveWupFunction.java"
+        sources[path] = sources[path].replace("public class GameLiveWupFunction {", """
+public class GameLiveWupFunction {
+ public static class Stock extends com.duowan.taf.jce.JceStruct {
+  public final java.util.List<Object> vUserCardItemCountLists=java.util.Collections.emptyList();
+ }
+ public static class z extends jd8 {
+  public z(GetUserCardPackageReq req){}
+  public void execute(){TestServer.grainChecks++;TestServer.reply(this,new Stock());}
+ }""")
+        sources["com/duowan/kiwi/liveinfo/wupfunction/WupFunction.java"] = """
+package com.duowan.kiwi.liveinfo.wupfunction;
+import ryxq.*;
+public class WupFunction {
+ public static class GameLiveWupFunction {
+  public static class Notice {public int iRoomId=123;public long lPresenterUid=789;}
+  public static class Room extends com.duowan.taf.jce.JceStruct {
+   public Notice tNotice=new Notice();
+  }
+  public static class getLivingInfo extends jd8 {
+   public getLivingInfo(long a,long b,long c,long room,String d,String e){}
+   public void execute(){TestServer.reply(this,new Room());}
+  }
+ }
+}"""
         sources["io/github/saycm/huyaplus/HuyaTaskClient.java"] = """
 package io.github.saycm.huyaplus;
 import android.os.*;
@@ -49,17 +88,48 @@ import android.content.*;import android.os.*;import java.lang.reflect.*;
 public class SequenceTest {
  public static void main(String[] args){
   boolean[] autoOn={true};
+  boolean[] giftOn={args.length>0};
   SharedPreferences prefs=(SharedPreferences)Proxy.newProxyInstance(SequenceTest.class.getClassLoader(),
    new Class<?>[]{SharedPreferences.class},(proxy,method,values)->{
     String key=(String)values[0];
-    if(method.getName().equals("getString"))return key.equals(GlassSettings.KEY_TASK_INTERVAL)?"5":"";
-    if(method.getName().equals("getBoolean"))return key.equals(GlassSettings.KEY_DICE_WELFARE_SIGN)
-     ||key.equals(GlassSettings.KEY_AUTO_DICE)&&autoOn[0]||key.equals(GlassSettings.KEY_AUTO_SIGN);
+    if(method.getName().equals("getString")){
+     if(key.equals(GlassSettings.KEY_TASK_INTERVAL))return "5";
+     return key.equals(GlassSettings.KEY_GIFT_ROOMS)?"123=1":"";
+    }
+    if(method.getName().equals("getBoolean")){
+     if(key.equals(GlassSettings.KEY_AUTO_GIFT))return giftOn[0];
+     return args.length==0&&(key.equals(GlassSettings.KEY_DICE_WELFARE_SIGN)
+       ||key.equals(GlassSettings.KEY_AUTO_DICE)&&autoOn[0]||key.equals(GlassSettings.KEY_AUTO_SIGN));
+    }
     throw new AssertionError("unused prefs");
    });
   DailyAutomation engine=new DailyAutomation(new io.github.libxposed.api.XposedModule(){},
     prefs,SequenceTest.class.getClassLoader());
+  boolean alreadySubmitted=args.length>0&&"gift-already-submitted".equals(args[0]);
+  if(alreadySubmitted){
+   java.text.SimpleDateFormat day=new java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.ROOT);
+   day.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+   ContentResolver.claims.add("gift-send/"+ryxq.xxe.uid+"/"+day.format(new java.util.Date())+"/789");
+  }
   engine.onOpen(new Context());
+  if(alreadySubmitted){
+   Handler.advance(1830000);
+   if(ryxq.TestServer.grainChecks!=0)throw new AssertionError("submitted room still checking stock");
+   return;
+  }
+  if(args.length>0){
+   Handler.advance(40000);
+   if(ryxq.TestServer.grainChecks!=1)throw new AssertionError("missing initial stock check");
+   engine.onOpen(new Context());
+   Handler.advance(1760000);
+   if(ryxq.TestServer.grainChecks!=1)throw new AssertionError("stock checked before 30 minutes");
+   Handler.advance(30000);
+   if(ryxq.TestServer.grainChecks!=2)throw new AssertionError("empty stock did not get checked again");
+   giftOn[0]=false;
+   Handler.advance(1800000);
+   if(ryxq.TestServer.grainChecks!=2)throw new AssertionError("disabled gifts still checking stock");
+   return;
+  }
   Handler.advance(999);
   if(HuyaTaskClient.calls.size()!=1||ryxq.TestServer.lists!=0)
     throw new AssertionError("tasks started before sign receipt");
@@ -74,12 +144,18 @@ public class SequenceTest {
     throw new AssertionError("phase interval ignored "+HuyaTaskClient.times);
   if(ryxq.TestServer.lists!=1||ryxq.TestServer.signs!=2)
     throw new AssertionError("legacy tasks failed after native completion");
+  Handler.advance(800000);
+  if(java.util.Collections.frequency(HuyaTaskClient.calls,"getJumpGameModule")!=1)
+    throw new AssertionError("dice were checked before 15 minutes");
+  Handler.advance(100000);
+  if(java.util.Collections.frequency(HuyaTaskClient.calls,"getJumpGameModule")!=2)
+    throw new AssertionError("dice were not checked after 15 minutes");
   autoOn[0]=false;
-  Handler.advance(60000);
+  Handler.advance(900000);
   autoOn[0]=true;
   engine.onOpen(new Context());
-  Handler.advance(65000);
-  if(java.util.Collections.frequency(HuyaTaskClient.calls,"getJumpGameModule")<2)
+  Handler.advance(900000);
+  if(java.util.Collections.frequency(HuyaTaskClient.calls,"getJumpGameModule")!=3)
     throw new AssertionError("same-day dice monitor failed to restart");
  }
 }"""
@@ -98,8 +174,10 @@ public class SequenceTest {
                                      "-cp", str(android), "-d", str(folder / "classes"), *files],
                                     capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result = subprocess.run([str(JDK / "bin" / ("java" + EXE)), "-cp",
-                                     os.pathsep.join((str(folder / "classes"), str(android))),
-                                     "io.github.saycm.huyaplus.SequenceTest"],
-                                    capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            for case in ([], ["free-grain"], ["gift-already-submitted"]):
+                with self.subTest(case=case):
+                    result = subprocess.run([str(JDK / "bin" / ("java" + EXE)), "-cp",
+                                             os.pathsep.join((str(folder / "classes"), str(android))),
+                                             "io.github.saycm.huyaplus.SequenceTest", *case],
+                                            capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    self.assertEqual(result.returncode, 0, result.stderr)

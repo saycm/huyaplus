@@ -8,7 +8,7 @@
 [![GitHub 源码](https://img.shields.io/badge/GitHub-%E6%BA%90%E7%A0%81-24292f)](https://github.com/saycm/huyaplus)
 [![Telegram 频道](https://img.shields.io/badge/Telegram-%E9%A2%91%E9%81%93-0969da)](https://t.me/+Gdwx4F3flrwzYzE1)
 
-[![最新版本](https://img.shields.io/github/v/release/Xposed-Modules-Repo/io.github.saycm.huyaplus?label=release)](https://github.com/Xposed-Modules-Repo/io.github.saycm.huyaplus/releases/latest)
+[![最新版本](https://img.shields.io/github/v/release/Xposed-Modules-Repo/io.github.saycm.huyaplus?label=release&display_name=release&sort=date)](https://github.com/Xposed-Modules-Repo/io.github.saycm.huyaplus/releases/latest)
 
 [下载模块](#下载模块) · [支持应用](#支持应用) · [环境要求](#环境要求) · [使用教程](#使用教程) · [常见问题](#常见问题) · [社区](#社区) · [说明](#说明)
 
@@ -44,7 +44,7 @@
 
 | 项目 | 版本或范围 |
 | --- | --- |
-| 模块版本 | 1.19（`20`） |
+| 模块版本 | 1.20 |
 | Android | Android 10 及以上（API 29+） |
 | 框架 | 支持 libxposed API 102 的 LSPosed |
 | 模块包名 | `io.github.saycm.huyaplus` |
