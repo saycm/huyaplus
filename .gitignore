@@ -1,0 +1,14 @@
+build/
+*.apk
+*.idsig
+*.jks
+*.keystore
+__pycache__/
+*.pyc
+.idea/
+*.iml
+*.p12
+*.pfx
+*.dpapi
+.env
+.codex-attachments/

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="glass_card">#F2FFFFFF</color>
+    <color name="glass_card_stroke">#1F000000</color>
+    <color name="glass_text">#2A2D3D</color>
+    <color name="glass_secondary">#7C7F92</color>
+    <color name="huya_accent">#7C6AF0</color>
+    <color name="warning_amber">#F59E0B</color>
+    <color name="success_green">#34C88A</color>
+    <color name="avatar_start">#B9A9FF</color>
+    <color name="avatar_end">#8A72FF</color>
+    <color name="hero_text">#FFFFFF</color>
+</resources>

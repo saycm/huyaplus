@@ -1,0 +1,56 @@
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = "io/github/saycm/huyaplus"
+
+
+class QualitySessionTest(unittest.TestCase):
+    def test_manual_selection_cancels_pending_and_auto_applies_once_per_room(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "QualitySessionTest.java"
+            source.write_text("""package io.github.saycm.huyaplus;
+public class QualitySessionTest {
+ public static void main(String[] args) {
+  QualitySession session = new QualitySession();
+  int first = session.enter();
+  if (!session.queue(first) || session.queue(first))
+   throw new AssertionError("duplicate updates must share one pending attempt");
+  session.dequeue(first);
+  if (!session.queue(first))
+   throw new AssertionError("an unready room must allow another attempt");
+  if (!session.pending(first) || !session.claim(first) || session.claim(first))
+   throw new AssertionError("automatic selection must run once");
+  int second = session.enter();
+  session.dequeue(first);
+  if (!session.queue(second))
+   throw new AssertionError("callbacks from an old room must not block the new room");
+  if (session.pending(first) || !session.pending(second))
+   throw new AssertionError("old room callbacks must be invalidated");
+  session.manualSelection();
+  if (session.pending(second) || session.claim(second))
+   throw new AssertionError("manual selection must cancel automatic switching");
+  int third = session.enter();
+  if (!session.claim(third))
+   throw new AssertionError("next room must enable automatic selection");
+ }
+}""", encoding="utf-8")
+            jdk = Path(os.environ["JAVA_HOME"]) / "bin"
+            exe = ".exe" if os.name == "nt" else ""
+            compiled = subprocess.run(
+                [str(jdk / ("javac" + exe)), "-encoding", "UTF-8", "-d", str(root),
+                 str(ROOT / "tools/huya-compat-src" / PACKAGE / "QualitySession.java"),
+                 str(source)], capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+            result = subprocess.run(
+                [str(jdk / ("java" + exe)), "-cp", str(root),
+                 "io.github.saycm.huyaplus.QualitySessionTest"],
+                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.saycm.huyaplus"
+    android:versionCode="19"
+    android:versionName="1.18">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+    <queries>
+        <package android:name="com.duowan.kiwi" />
+    </queries>
+    <application
+        android:allowBackup="false"
+        android:description="@string/app_description"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name">
+        <activity
+            android:name=".GlassDashboardActivity"
+            android:exported="true"
+            android:theme="@style/GlassDashboard">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".AppDetailActivity"
+            android:exported="false"
+            android:theme="@style/GlassDashboard" />
+        <provider
+            android:name=".TaskLogProvider"
+            android:authorities="io.github.saycm.huyaplus.tasks"
+            android:exported="true" />
+        <activity
+            android:name=".TaskLogActivity"
+            android:exported="false"
+            android:theme="@style/GlassDashboard" />
+        <activity
+            android:name=".TaskSettingsActivity"
+            android:exported="false"
+            android:theme="@style/GlassDashboard" />
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            android:authorities="io.github.saycm.huyaplus.XposedService"
+            android:directBootAware="true"
+            android:exported="true" />
+    </application>
+</manifest>
