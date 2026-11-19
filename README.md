@@ -44,7 +44,7 @@
 
 | 项目 | 版本或范围 |
 | --- | --- |
-| 模块版本 | 1.18（`19`） |
+| 模块版本 | 1.19（`20`） |
 | Android | Android 10 及以上（API 29+） |
 | 框架 | 支持 libxposed API 102 的 LSPosed |
 | 模块包名 | `io.github.saycm.huyaplus` |

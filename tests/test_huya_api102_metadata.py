@@ -56,8 +56,8 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             (MODULE_DIR / "res/mipmap-xxxhdpi/ic_launcher.png").is_file(),
             "launcher icon is missing",
         )
-        self.assertIn('android:versionCode="19"', manifest)
-        self.assertIn('android:versionName="1.18"', manifest)
+        self.assertIn('android:versionCode="20"', manifest)
+        self.assertIn('android:versionName="1.19"', manifest)
         self.assertIn('android:name=".GlassDashboardActivity"', manifest)
         self.assertIn('android:name=".AppDetailActivity"', manifest)
         self.assertIn('android:theme="@style/GlassDashboard"', manifest)

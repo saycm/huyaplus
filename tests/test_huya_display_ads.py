@@ -30,10 +30,60 @@ public class UniversalTaskBannerView {
  public void setData(List<?> data){items=new ArrayList<>(data);}
 }
 """,
+    "com/duowan/kiwi/interaction/api/data/ComponentPanelItemInfo.java": """
+package com.duowan.kiwi.interaction.api.data;
+public class ComponentPanelItemInfo {
+ private final int id;
+ private final String name, route;
+ public ComponentPanelItemInfo(int id,String name,String route){
+  this.id=id;this.name=name;this.route=route;
+ }
+ public int getComponentId(){return id;}
+ public String getComponentName(){return name;}
+ public String getJumpUrl(boolean landscape){return landscape?null:route;}
+}
+""",
+    "com/duowan/kiwi/interaction/impl/view/UniversalComponentNavigationView.java": """
+package com.duowan.kiwi.interaction.impl.view;
+import java.util.List;
+public class UniversalComponentNavigationView {
+ public List<?> items;
+ public void setAllTimeLimitComps(List<?> items){this.items=items;}
+}
+""",
+    "com/duowan/biz/util/OrientationData.java": """
+package com.duowan.biz.util;
+public class OrientationData {
+ private final String portrait, landscape;
+ public OrientationData(String portrait,String landscape){this.portrait=portrait;this.landscape=landscape;}
+ public String getPortrait(){return portrait;}
+ public String getLandscape(){return landscape;}
+}
+""",
+    "com/duowan/kiwi/inputbar/api/view/InputEntryData.java": """
+package com.duowan.kiwi.inputbar.api.view;
+import com.duowan.biz.util.OrientationData;
+public class InputEntryData {
+ private final String title;
+ private final OrientationData actionUrl;
+ public InputEntryData(String title,OrientationData actionUrl){this.title=title;this.actionUrl=actionUrl;}
+ public String getTitle(){return title;}
+ public OrientationData getActionUrl(){return actionUrl;}
+}
+""",
+    "com/duowan/kiwi/inputbar/api/view/entryview/base/BottomBarEntryListView.java": """
+package com.duowan.kiwi.inputbar.api.view.entryview.base;
+import java.util.List;
+public class BottomBarEntryListView {
+ public List<?> items;
+ public void refreshAllEntryView(List<?> items){this.items=items;}
+}
+""",
     "com/duowan/HUYA/ActCommEnt.java": """
 package com.duowan.HUYA;
 public class ActCommEnt {
  public int iEntId;
+ public String sFullUrl;
  public ActCommEnt(int id){iEntId=id;}
 }
 """,
@@ -191,6 +241,11 @@ import com.huya.oak.miniapp.container.internal.MiniAppPopupFragment;
 import com.huya.kiwi.hyext.delegate.api.HYExtRightTopWindowModeManager;
 import com.duowan.kiwi.universal.live.activitybar.banner.UniversalLiveBannerView;
 import com.duowan.kiwi.universal.live.activitybar.banner.UniversalTaskBannerView;
+import com.duowan.kiwi.interaction.api.data.ComponentPanelItemInfo;
+import com.duowan.kiwi.interaction.impl.view.UniversalComponentNavigationView;
+import com.duowan.biz.util.OrientationData;
+import com.duowan.kiwi.inputbar.api.view.InputEntryData;
+import com.duowan.kiwi.inputbar.api.view.entryview.base.BottomBarEntryListView;
 public class DisplayAdsTest {
  static final class Param implements XposedModule.PackageReadyParam {
   final ClassLoader loader;
@@ -249,7 +304,7 @@ public class DisplayAdsTest {
    PopupModule module=new PopupModule();
    for(String key:new String[]{"magicboxrecentresult_autotrigger",
      "giftblindbox_autotrigger","adrewardtasks_autotrigger","gamepad_autotrigger",
-     "gamead_autotrigger"}){
+     "gamead_autotrigger","cardcollectionactivity_streamertrigger"}){
     Object result=call(module,"tryShowPopup",new Class<?>[]{PopupItem.class},new PopupItem(key));
     check(Boolean.FALSE.equals(result),"Automatic live-room cards must be rejected before queueing");
    }
@@ -266,7 +321,7 @@ public class DisplayAdsTest {
   }else if(args[0].equals("live-placeholder-cards")){
    PopupModule module=new PopupModule();
    for(String key:new String[]{"gamead_autotrigger","shop_autotrigger",
-     "shopplaymate_autotrigger"}){
+     "shopplaymate_autotrigger","cardcollectionactivity_streamertrigger"}){
     Object result=call(module,"tryPlaceholderPopup",new Class<?>[]{PopupItem.class},
      new PopupItem(key));
     check(Boolean.FALSE.equals(result),"Automatic placeholder cards must be rejected before queueing");
@@ -282,7 +337,7 @@ public class DisplayAdsTest {
    HYExtRightTopWindowModeManager manager=new HYExtRightTopWindowModeManager();
    Class<?>[] types={IFloatWindowContainer.class,MiniAppPopupFragment.class,
     ActCommEnt.class,int.class,boolean.class};
-   for(int id:new int[]{317,201,175}){
+   for(int id:new int[]{317,201,175,425}){
     for(boolean landscape:new boolean[]{false,true}){
      for(MiniAppPopupFragment fragment:new MiniAppPopupFragment[]{
        null,new MiniAppPopupFragment()}){
@@ -291,11 +346,47 @@ public class DisplayAdsTest {
      }
     }
    }
-   check(manager.attachedCards==0,"Gift, game and shopping promotions must not attach floating cards");
+   ActCommEnt cardCampaign=new ActCommEnt(999);
+   cardCampaign.sFullUrl="https://hd.huya.com/hyfe/revenue-business/cards-pot.html?source=live";
+   call(manager,"createFloatWindowItemView",types,null,null,cardCampaign,0,false);
+   check(manager.attachedCards==0,"Known promotions and card collection must not attach floating cards");
    for(ActCommEnt item:new ActCommEnt[]{new ActCommEnt(0),new ActCommEnt(999),null}){
     call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),item,0,false);
    }
    check(manager.attachedCards==3,"Other entrance IDs and null must retain original handling");
+  }else if(args[0].equals("live-campaign-shortcuts")){
+   UniversalComponentNavigationView nav=new UniversalComponentNavigationView();
+   Class<?>[] types={List.class};
+   ComponentPanelItemInfo phone=new ComponentPanelItemInfo(36305,"魔奖时刻",null);
+   ComponentPanelItemInfo phoneByRoute=new ComponentPanelItemInfo(50001,"活动",
+    "https://zt.huya.com/688005a6/mobile/index.html?source=live");
+   ComponentPanelItemInfo cards=new ComponentPanelItemInfo(50002,"集卡领虎牙币",null);
+   ComponentPanelItemInfo cardsByRoute=new ComponentPanelItemInfo(50003,"活动",
+    "https://zt.huya.com/31bf1210/mobile/index.html?source=live");
+   ComponentPanelItemInfo box=new ComponentPanelItemInfo(34211,"百宝箱",null);
+   ComponentPanelItemInfo unknown=new ComponentPanelItemInfo(50004,"其他活动",
+    "https://example.com/31bf1210/mobile/index.html");
+   List<?> input=Collections.unmodifiableList(Arrays.asList(
+    phone,box,phoneByRoute,cards,unknown,cardsByRoute));
+   call(nav,"setAllTimeLimitComps",types,input);
+   check(nav.items.equals(Arrays.asList(box,unknown)),"Only the two campaigns should be removed");
+   check(input.size()==6,"Campaign filtering must preserve the caller's list");
+   call(nav,"setAllTimeLimitComps",types,Collections.singletonList(phone));
+   check(nav.items.isEmpty(),"A promotion-only refresh must clear old entries");
+   call(nav,"setAllTimeLimitComps",types,new Object[]{null});
+   check(nav.items==null,"Null must use Huya's normal reset");
+  }else if(args[0].equals("live-input-campaign-shortcuts")){
+   BottomBarEntryListView bar=new BottomBarEntryListView();
+   InputEntryData gift=new InputEntryData("礼物",null);
+   InputEntryData cards=new InputEntryData("集卡领虎牙币",null);
+   InputEntryData cardsByRoute=new InputEntryData("活动",new OrientationData(
+    null,"https://hd.huya.com/hyfe/revenue-business/cards-pot.html"));
+   InputEntryData other=new InputEntryData("AI工坊",new OrientationData(
+    "https://hd.huya.com/hyfe/AI-gift-202605/index.html",null));
+   List<?> input=Collections.unmodifiableList(Arrays.asList(gift,cards,other,cardsByRoute));
+   call(bar,"refreshAllEntryView",new Class<?>[]{List.class},input);
+   check(bar.items.equals(Arrays.asList(gift,other)),"Input bar must preserve gift and unrelated entries");
+   check(input.size()==4,"Input bar filtering must preserve the caller's list");
   }else if(args[0].equals("live-promotion-banners")){
    UniversalLiveBannerView banner=new UniversalLiveBannerView();
    banner.setData(Arrays.asList("old promotion"));
@@ -495,6 +586,12 @@ class HuyaDisplayAdsTest(unittest.TestCase):
 
     def test_promotional_h5_and_miniapp_cards_do_not_attach_floating_windows(self):
         self.run_case("live-promotion-windows")
+
+    def test_live_campaign_shortcuts_keep_non_promotional_buttons(self):
+        self.run_case("live-campaign-shortcuts")
+
+    def test_live_input_campaign_shortcuts_keep_gift_and_other_entries(self):
+        self.run_case("live-input-campaign-shortcuts")
 
     def test_live_promotion_banner_refills_are_hidden_without_removing_task_progress(self):
         self.run_case("live-promotion-banners")

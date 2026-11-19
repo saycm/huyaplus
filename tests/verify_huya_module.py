@@ -62,7 +62,7 @@ def main() -> None:
     assert "io.github.libxposed.service.XposedProvider" in manifest
     assert "io.github.saycm.huyaplus.XposedService" in manifest
     assert run(str(APKANALYZER), "manifest", "version-code", str(args.module)).strip() == "19"
-    assert run(str(APKANALYZER), "manifest", "version-name", str(args.module)).strip() == "1.18"
+    assert run(str(APKANALYZER), "manifest", "version-name", str(args.module)).strip() == "1.19"
     assert "xposedmodule" not in manifest
     assert "xposedminversion" not in manifest
 

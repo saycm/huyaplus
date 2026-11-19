@@ -9,6 +9,7 @@ import org.json.JSONObject;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -16,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 import io.github.libxposed.api.XposedModule;
 
@@ -502,6 +504,59 @@ public final class HuyaCompatEntry extends XposedModule {
             logFailure(throwable);
         }
         try {
+            Class<?> type = classLoader.loadClass(
+                    "com.duowan.kiwi.interaction.impl.view.UniversalComponentNavigationView");
+            Class<?> itemType = classLoader.loadClass(
+                    "com.duowan.kiwi.interaction.api.data.ComponentPanelItemInfo");
+            Method setData = type.getDeclaredMethod("setAllTimeLimitComps", List.class);
+            Method componentId = itemType.getMethod("getComponentId");
+            Method componentName = itemType.getMethod("getComponentName");
+            Method jumpUrl = itemType.getMethod("getJumpUrl", boolean.class);
+            hookCampaignShortcuts(setData, item -> {
+                if (!itemType.isInstance(item)) {
+                    return false;
+                }
+                try {
+                    Object name = componentName.invoke(item);
+                    return Integer.valueOf(36305).equals(componentId.invoke(item))
+                            || isCampaignShortcutName(name)
+                            || isCampaignShortcutRoute(jumpUrl.invoke(item, false))
+                            || isCampaignShortcutRoute(jumpUrl.invoke(item, true));
+                } catch (ReflectiveOperationException ignored) {
+                    return false;
+                }
+            });
+            logInfo("hooked live-room campaign shortcuts");
+        } catch (Throwable throwable) {
+            logFailure(throwable);
+        }
+        try {
+            Class<?> bar = classLoader.loadClass(
+                    "com.duowan.kiwi.inputbar.api.view.entryview.base.BottomBarEntryListView");
+            Class<?> itemType = classLoader.loadClass(
+                    "com.duowan.kiwi.inputbar.api.view.InputEntryData");
+            Method title = itemType.getMethod("getTitle");
+            Method actionUrl = itemType.getMethod("getActionUrl");
+            Method portrait = actionUrl.getReturnType().getMethod("getPortrait");
+            Method landscape = actionUrl.getReturnType().getMethod("getLandscape");
+            hookCampaignShortcuts(bar.getDeclaredMethod("refreshAllEntryView", List.class), item -> {
+                if (!itemType.isInstance(item)) {
+                    return false;
+                }
+                try {
+                    Object route = actionUrl.invoke(item);
+                    return isCampaignShortcutName(title.invoke(item))
+                            || (route != null && (isCampaignShortcutRoute(portrait.invoke(route))
+                                    || isCampaignShortcutRoute(landscape.invoke(route))));
+                } catch (ReflectiveOperationException ignored) {
+                    return false;
+                }
+            });
+            logInfo("hooked live-room input bar campaign shortcuts");
+        } catch (Throwable throwable) {
+            logFailure(throwable);
+        }
+        try {
             Class<?> type = classLoader.loadClass("com.duowan.kiwi.popup.impl.PopupModule");
             Class<?> itemType = classLoader.loadClass("com.duowan.kiwi.popup.api.PopupItem");
             Method businessKey = itemType.getMethod("getBusinessKey");
@@ -510,6 +565,10 @@ public final class HuyaCompatEntry extends XposedModule {
                 hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object item = chain.getArg(0);
                     Object key = item == null ? null : businessKey.invoke(item);
+                    if ("cardcollectionactivity_streamertrigger".equals(key)) {
+                        logInfo("blocked card collection promotion before queueing");
+                        return false;
+                    }
                     if (key instanceof String && ((String) key).endsWith("_autotrigger")) {
                         logInfo("blocked automatic live-room card before queueing");
                         return false;
@@ -539,6 +598,11 @@ public final class HuyaCompatEntry extends XposedModule {
                         logInfo("blocked All-Star live-room activity card before creation");
                         return null;
                     }
+                    if (Integer.valueOf(425).equals(id)
+                            || isCardCollectionRoute(field(entry, "sFullUrl"))) {
+                        logInfo("blocked card collection promotion before window creation");
+                        return null;
+                    }
                     return chain.proceed();
                 });
                 logInfo("hooked promotional live-room window creation");
@@ -564,6 +628,49 @@ public final class HuyaCompatEntry extends XposedModule {
             logInfo("hooked live-room floating ad queue");
         } catch (Throwable throwable) {
             logFailure(throwable);
+        }
+    }
+
+    private void hookCampaignShortcuts(Method refresh, Predicate<Object> isCampaign) {
+        hook(refresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            Object data = chain.getArg(0);
+            if (!(data instanceof List)) {
+                return chain.proceed();
+            }
+            List<?> items = (List<?>) data;
+            List<Object> filtered = new ArrayList<>(items);
+            if (!filtered.removeIf(isCampaign)) {
+                return chain.proceed();
+            }
+            logInfo("filtered card collection or phone draw shortcut via " + refresh.getName());
+            return chain.proceed(new Object[]{filtered});
+        });
+    }
+
+    private static boolean isCampaignShortcutName(Object name) {
+        return "抽手机".equals(name) || "集卡".equals(name) || "集卡领虎牙币".equals(name)
+                || "集五卡·瓜分10万奖金".equals(name);
+    }
+
+    private static boolean isCampaignShortcutRoute(Object value) {
+        return isCardCollectionRoute(value)
+                || isRoute(value, "zt.huya.com", "/688005a6/mobile/index.html");
+    }
+
+    private static boolean isCardCollectionRoute(Object value) {
+        return isRoute(value, "hd.huya.com", "/hyfe/revenue-business/cards-pot.html")
+                || isRoute(value, "zt.huya.com", "/31bf1210/mobile/index.html");
+    }
+
+    private static boolean isRoute(Object value, String host, String path) {
+        if (!(value instanceof String)) {
+            return false;
+        }
+        try {
+            URI route = URI.create((String) value);
+            return host.equalsIgnoreCase(route.getHost()) && path.equals(route.getPath());
+        } catch (IllegalArgumentException ignored) {
+            return false;
         }
     }
 
