@@ -77,6 +77,12 @@
 - 模块免费使用，赞赏完全自愿。
 - 适配范围见本页。虎牙版本更新后，部分功能可能需要重新适配，欢迎在讨论组反馈。
 
+## 赞助打赏
+
+如果模块对你有帮助，可以用微信扫描下方赞赏码。谢谢支持。
+
+<a href="docs/assets/wechat-appreciation.png"><img src="docs/assets/wechat-appreciation.png" width="240" alt="微信赞赏码"></a>
+
 ## 构建与测试
 
 构建需要 Python 3、JDK 17、Android SDK Platform 36 和 Build Tools 36.0.0。
