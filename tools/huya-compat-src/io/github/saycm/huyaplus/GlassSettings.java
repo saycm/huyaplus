@@ -4,6 +4,9 @@ import java.util.Locale;
 
 public final class GlassSettings {
     public static final String PREFS = "glass_settings";
+    static final String MODULE_PROVIDER = "io.github.saycm.huyaplus.tasks";
+    static final String VERIFY_ROOT = "verify_root";
+    static final String ROOT_GRANTED = "root_granted";
     public static final String KEY_ADS = "ads";
     public static final String KEY_LIVE_CARDS = "live_cards";
     public static final String KEY_REWARDS = "rewards";
@@ -20,6 +23,10 @@ public final class GlassSettings {
     public static final String KEY_DICE_GIFT_ROOMS = "dice_gift_rooms";
     public static final String KEY_TASK_INTERVAL = "task_interval_seconds";
     public static final String KEY_TASK_ENABLED_PREFIX = "task_enabled_v1/";
+
+    static boolean defaultEnabled(String key) {
+        return !KEY_VIP_4K.equals(key);
+    }
 
     enum NavigationEntry {
         VIDEO("底栏 · 视频", 8),

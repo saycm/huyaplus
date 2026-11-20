@@ -61,6 +61,8 @@ final class DailyAutomation {
     private int alreadySigned;
     private int failed;
     private boolean giftActive;
+    private Runnable giftCheck;
+    private volatile GiftRound giftRound;
     private DailyAutomation diceSender;
     private NativeTaskRunner.ActionReply diceGiftReply;
     private java.util.function.BooleanSupplier diceGiftAllowed;
@@ -71,12 +73,24 @@ final class DailyAutomation {
     private int queuedRequests;
     private boolean syncFailureLogged;
 
+    private static final class GiftRound {
+        final long account;
+        final String day;
+
+        GiftRound(long account, String day) {
+            this.account = account;
+            this.day = day;
+        }
+    }
+
     private static final class GiftLimit {
+        final GiftRound round;
         final long presenter;
         final int count;
         final long freeCount;
         volatile boolean blocked;
-        GiftLimit(long presenter, int count, long freeCount) {
+        GiftLimit(GiftRound round, long presenter, int count, long freeCount) {
+            this.round = round;
             this.presenter = presenter; this.count = count; this.freeCount = freeCount;
         }
     }
@@ -87,8 +101,10 @@ final class DailyAutomation {
         final String task;
         final String target;
         final long account;
-        Pending(Result callback, String task, String target, long account) {
+        final GiftRound round;
+        Pending(Result callback, String task, String target, long account, GiftRound round) {
             this.callback = callback; this.task = task; this.target = target; this.account = account;
+            this.round = round;
         }
     }
 
@@ -134,8 +150,16 @@ final class DailyAutomation {
     private void pollLogin(int attempt) {
         try {
             long uid = loggedInUid();
+            if (uid != account) {
+                giftCheck = null;
+                if (giftRound != null) continueGiftRound(giftRound);
+            }
             if (uid > 0) {
                 polling = false;
+                if (giftCheck == null && afterBadges == null && giftAllowed()
+                        && dayKey(uid).equals(activeDay)) {
+                    runOnce(uid);
+                }
                 try { nativeTasks.onReady(uid, () -> handler.postDelayed(
                         () -> runOnce(uid), requestInterval)); }
                 catch (RuntimeException | LinkageError failure) {
@@ -156,7 +180,7 @@ final class DailyAutomation {
 
     private long loggedInUid() throws ReflectiveOperationException {
         Class<?> type = loader.loadClass("com.duowan.kiwi.base.login.api.ILoginComponent");
-        Object component = loader.loadClass("ryxq.xxe").getMethod("i", Class.class).invoke(null, type);
+        Object component = HuyaComponents.get(loader, type);
         Object login = type.getMethod("getLoginModule").invoke(component);
         Class<?> loginType = loader.loadClass("com.duowan.kiwi.base.login.api.ILoginModule");
         if (!Boolean.TRUE.equals(loginType.getMethod("isLogin").invoke(login))) return 0;
@@ -170,15 +194,31 @@ final class DailyAutomation {
     }
 
     private void runOnce(long uid) {
+        try {
+            if (loggedInUid() != uid) return;
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            return;
+        }
         String day = dayKey(uid);
-        if (!seen.add(day)) return;
+        boolean first = seen.add(day);
         boolean sign = prefs != null && prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false);
         boolean gift = prefs != null && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false);
         if (!sign && !gift) {
-            if (claim("disabled/" + day)) log("每日任务", "", "跳过", "两个自动任务开关均未开启");
+            if (first && claim("disabled/" + day)) log("每日任务", "", "跳过", "两个自动任务开关均未开启");
             return;
         }
-        boolean runSign = sign && claim("sign/" + day);
+        if (!first && !gift) return;
+        try { requestInterval = NativeTaskCatalog.intervalSeconds(
+                prefs.getString(GlassSettings.KEY_TASK_INTERVAL, "30")) * 1000L; }
+        catch (IllegalArgumentException failure) {
+            log("配置", "", "失败", "执行间隔无效，未执行每日任务");
+            return;
+        }
+        if (!first && day.equals(activeDay)) {
+            if (callbacksInstalled && afterBadges == null) startGiftChecks(uid, day);
+            return;
+        }
+        boolean runSign = first && sign && claim("sign/" + day);
         if (!runSign && !gift) {
             log("每日任务", "", "跳过", "今日已触发过，防止重复执行；未确认结果请查看之前的日志");
             return;
@@ -189,23 +229,20 @@ final class DailyAutomation {
         giftRooms.clear();
         attemptedGiftRooms.clear();
         giftActive = false;
+        giftCheck = null;
+        giftRound = null;
+        afterBadges = null;
         requests.clear();
         for (GiftLimit limit : guardedGifts.values()) limit.blocked = true;
         grainBudget = -1;
         signed = 0;
         alreadySigned = 0;
         failed = 0;
-        try { requestInterval = NativeTaskCatalog.intervalSeconds(
-                prefs.getString(GlassSettings.KEY_TASK_INTERVAL, "30")) * 1000L; }
-        catch (IllegalArgumentException failure) {
-            log("配置", "", "失败", "执行间隔无效，未执行每日任务");
-            return;
-        }
-        log("每日任务", "", "开始", "今日首次打开，登录已就绪");
+        if (first) log("每日任务", "", "开始", "今日首次打开，登录已就绪");
         try {
             installCallbacks();
             Runnable gifts = () -> {
-                if (gift) checkGifts(uid, day);
+                if (gift) startGiftChecks(uid, day);
                 else log("免费虎粮", "", "跳过", "功能未开启");
             };
             if (runSign) {
@@ -284,7 +321,16 @@ final class DailyAutomation {
     private void installCallbacks() throws ReflectiveOperationException {
         if (callbacksInstalled) return;
         Class<?> response = loader.loadClass("com.duowan.taf.jce.JceStruct");
-        Method success = loader.loadClass("ryxq.jd8").getDeclaredMethod("onResponse", response, boolean.class);
+        Class<?> error = loader.loadClass("com.huya.mtp.data.exception.DataException");
+        Method success;
+        Method failedMethod;
+        try {
+            success = loader.loadClass("ryxq.jd8").getDeclaredMethod("onResponse", response, boolean.class);
+            failedMethod = loader.loadClass("ryxq.oe6").getDeclaredMethod("onError", error, boolean.class);
+        } catch (ClassNotFoundException | NoSuchMethodException oldCallbacksAbsent) {
+            success = loader.loadClass("ryxq.yy5").getDeclaredMethod("onResponse", response, boolean.class);
+            failedMethod = loader.loadClass("ryxq.xp4").getDeclaredMethod("onError", error, boolean.class);
+        }
         module.hook(success).intercept(chain -> {
             Pending pending = requests.get(chain.getThisObject());
             if (pending == null) return chain.proceed();
@@ -294,8 +340,6 @@ final class DailyAutomation {
             handler.post(() -> complete(pending, data, false));
             return null;
         });
-        Class<?> error = loader.loadClass("com.huya.mtp.data.exception.DataException");
-        Method failedMethod = loader.loadClass("ryxq.oe6").getDeclaredMethod("onError", error, boolean.class);
         module.hook(failedMethod).intercept(chain -> {
             Pending pending = requests.remove(chain.getThisObject());
             if (pending == null) return chain.proceed();
@@ -307,8 +351,13 @@ final class DailyAutomation {
 
     private void complete(Pending pending, Object response, boolean timedOut) {
         try {
+            if (pending.round != null && !continueGiftRound(pending.round)) return;
             if (account != pending.account || loggedInUid() != pending.account) {
                 log(pending.task, pending.target, "取消", "账号已退出或切换，不继续执行");
+                if (pending.round == null && account == pending.account) {
+                    badges.clear();
+                    afterBadges = null;
+                }
                 return;
             }
             if (timedOut) log(pending.task, pending.target, "结果未确认", "请求超时，不自动重复发送");
@@ -320,35 +369,41 @@ final class DailyAutomation {
 
     private void request(String requestClass, Object body, String task, String target, Result result)
             throws ReflectiveOperationException {
-        Object request = loader.loadClass(requestClass).getConstructor(body.getClass()).newInstance(body);
-        sendRequest(request, task, target, result);
+        request(requestClass, body, task, target, null, result);
     }
 
-    private void sendRequest(Object request, String task, String target, Result result)
+    private void request(String requestClass, Object body, String task, String target,
+                         GiftRound round, Result result) throws ReflectiveOperationException {
+        Object request = loader.loadClass(requestClass).getConstructor(body.getClass()).newInstance(body);
+        sendRequest(request, task, target, round, result);
+    }
+
+    private void sendRequest(Object request, String task, String target, GiftRound round, Result result)
             throws ReflectiveOperationException {
         if (requestGap) {
             queuedRequests++;
             handler.postDelayed(() -> {
                 queuedRequests--;
-                try { executeRequest(request, task, target, result); }
+                try { executeRequest(request, task, target, round, result); }
                 catch (ReflectiveOperationException failure) { result.accept(null); }
             }, requestInterval);
-        } else executeRequest(request, task, target, result);
+        } else executeRequest(request, task, target, round, result);
     }
 
-    private void executeRequest(Object request, String task, String target, Result result)
+    private void executeRequest(Object request, String task, String target, GiftRound round, Result result)
             throws ReflectiveOperationException {
-        if (loggedInUid() != account) { result.accept(null); return; }
+        if (round != null) {
+            if (!continueGiftRound(round)) return;
+        } else if (loggedInUid() != account) {
+            result.accept(null);
+            return;
+        }
         if ("粉丝牌打卡".equals(task) && !prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false)) {
             result.accept(null);
             return;
         }
-        if (("直播间信息".equals(task) || "免费库存".equals(task)) && !giftAllowed()) {
-            result.accept(null);
-            return;
-        }
         requestGap = true;
-        Pending pending = new Pending(result, task, target, account);
+        Pending pending = new Pending(result, task, target, account, round);
         requests.put(request, pending);
         log(task, target, "请求已发出", "等待服务端回执，尚未确认成功");
         handler.postDelayed(() -> {
@@ -454,20 +509,33 @@ final class DailyAutomation {
         }
     }
 
-    private void checkGifts(long uid, String day) {
-        if (!day.equals(activeDay) || !day.equals(dayKey(uid)) || !giftAllowed()) return;
+    private void startGiftChecks(long uid, String day) {
+        if (giftCheck != null || !day.equals(activeDay)) return;
+        giftCheck = new Runnable() {
+            @Override public void run() {
+                if (giftCheck == this) checkGifts(uid, day, this);
+            }
+        };
+        giftCheck.run();
+    }
+
+    private void checkGifts(long uid, String day, Runnable check) {
         long delay = GIFT_CHECK_INTERVAL;
         try {
-            if (loggedInUid() != uid) return;
-            if (isIdle() && nativeTasks.isIdle()) beginGifts();
+            if (!day.equals(dayKey(uid)) || !giftAllowed() || loggedInUid() != uid) {
+                giftCheck = null;
+                if (giftRound != null) continueGiftRound(giftRound);
+                return;
+            }
+            if (isIdle() && nativeTasks.isIdle()) beginGifts(uid, day);
             else delay = requestInterval;
         } catch (ReflectiveOperationException | RuntimeException failure) {
             log("免费虎粮", "", "失败", "库存检查未启动：" + failure.getClass().getSimpleName());
         }
-        handler.postDelayed(() -> checkGifts(uid, day), delay);
+        handler.postDelayed(check, delay);
     }
 
-    private void beginGifts() {
+    private void beginGifts(long uid, String day) {
         Map<Long, Integer> rooms = AutomationRules.parse(prefs.getString(GlassSettings.KEY_GIFT_ROOMS, ""));
         if (rooms.isEmpty()) log("免费虎粮", "", "跳过", "未配置直播间和数量");
         else {
@@ -476,7 +544,8 @@ final class DailyAutomation {
             }
             if (giftRooms.isEmpty()) return;
             giftActive = true;
-            nextGiftRoom();
+            giftRound = new GiftRound(uid, day);
+            nextGiftRoom(giftRound);
         }
     }
 
@@ -495,10 +564,11 @@ final class DailyAutomation {
                 prefs.getString(GlassSettings.KEY_TASK_INTERVAL, "30")) * 1000L;
         sender.diceGiftAllowed = allowed; sender.diceGiftKey = operationKey;
         sender.diceGiftReply = reply;
+        sender.giftRound = new GiftRound(uid, sender.activeDay);
         sender.giftRooms.add(new java.util.AbstractMap.SimpleImmutableEntry<>(room, 1));
         try {
             sender.installCallbacks();
-            sender.nextGiftRoom();
+            sender.nextGiftRoom(sender.giftRound);
         } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
             sender.finishDiceGift(false, "免费虎粮接口不可用");
         }
@@ -511,6 +581,7 @@ final class DailyAutomation {
         NativeTaskRunner.ActionReply reply = diceGiftReply;
         if (reply == null) return;
         diceGiftReply = null; diceGiftAllowed = () -> false;
+        giftRound = null;
         giftRooms.clear(); requests.clear();
         for (GiftLimit limit : guardedGifts.values()) limit.blocked = true;
         reply.complete(success, detail);
@@ -518,7 +589,7 @@ final class DailyAutomation {
 
     private Object service(String className) throws ReflectiveOperationException {
         Class<?> type = loader.loadClass(className);
-        return loader.loadClass("ryxq.xxe").getMethod("i", Class.class).invoke(null, type);
+        return HuyaComponents.get(loader, type);
     }
 
     private Object propsModule() throws ReflectiveOperationException {
@@ -526,16 +597,35 @@ final class DailyAutomation {
         return type.getMethod("getPropsModule").invoke(service(type.getName()));
     }
 
-    private void nextGiftRoom() {
-        if (!giftAllowed()) {
-            skipRemainingGifts("功能已关闭，剩余房间不再赠送");
-            giftActive = false;
-            finishDiceGift(false, "任务开关已关闭，未继续赠送");
-            return;
+    private boolean isGiftRoundCurrent(GiftRound round) {
+        if (giftRound != round || !round.day.equals(dayKey(round.account))) return false;
+        try {
+            return loggedInUid() == round.account && giftAllowed() && giftRound == round;
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            return false;
         }
+    }
+
+    private boolean continueGiftRound(GiftRound round) {
+        if (giftRound != round) return false;
+        if (isGiftRoundCurrent(round)) return true;
+        String reason = "账号、日期或任务开关已变更，未继续赠送";
+        log("免费虎粮", "", "取消", reason);
+        skipRemainingGifts(reason);
+        finishDiceGift(false, reason);
+        return false;
+    }
+
+    private void nextGiftRoomLater(GiftRound round, long delay) {
+        handler.postDelayed(() -> nextGiftRoom(round), delay);
+    }
+
+    private void nextGiftRoom(GiftRound round) {
+        if (!continueGiftRound(round)) return;
         Map.Entry<Long, Integer> room = giftRooms.poll();
         if (room == null) {
             giftActive = false;
+            giftRound = null;
             if (diceGiftReply != null) {
                 finishDiceGift(false, "本次未收到免费虎粮成功回执，不领取骰子奖励");
                 return;
@@ -545,16 +635,11 @@ final class DailyAutomation {
         }
         String target = "直播间 " + room.getKey();
         try {
-            if (loggedInUid() != account) {
-                log("免费虎粮", "", "取消", "账号发生变化，剩余房间不再执行");
-                skipRemainingGifts("账号已改变，未继续赠送");
-                return;
-            }
             Object query = loader.loadClass(
                     "com.duowan.kiwi.liveinfo.wupfunction.WupFunction$GameLiveWupFunction$getLivingInfo")
                     .getConstructor(long.class, long.class, long.class, long.class, String.class, String.class)
                     .newInstance(0L, 0L, 0L, room.getKey(), "", "");
-            sendRequest(query, "直播间信息", target, response -> {
+            sendRequest(query, "直播间信息", target, round, response -> {
                 try {
                     Object notice = response == null ? null : value(response, "tNotice");
                     if (notice != null) {
@@ -565,47 +650,44 @@ final class DailyAutomation {
                             ((Number) value(notice, "iRoomId")).longValue(),
                             ((Number) value(notice, "lPresenterUid")).longValue())) {
                         log("免费虎粮", target, "跳过", "无法核实房间对应的主播，没有发送礼物");
-                        handler.postDelayed(this::nextGiftRoom, 1200L);
+                        nextGiftRoomLater(round, 1200L);
                         return;
                     }
                     long presenter = ((Number) value(notice, "lPresenterUid")).longValue();
-                    if (diceGiftKey == null && store.hasClaim(dailyGiftKey(presenter))) {
+                    if (diceGiftKey == null && store.hasClaim(dailyGiftKey(round, presenter))) {
                         attemptedGiftRooms.add(room.getKey());
-                        handler.postDelayed(this::nextGiftRoom, 1200L);
+                        nextGiftRoomLater(round, 1200L);
                         return;
                     }
-                    fetchGrain(room.getKey(), presenter, room.getValue());
+                    fetchGrain(round, room.getKey(), presenter, room.getValue());
                 } catch (ReflectiveOperationException | RuntimeException failure) {
                     log("免费虎粮", target, "失败", "送礼接口不匹配，没有继续发送");
-                    handler.postDelayed(this::nextGiftRoom, 1200L);
+                    nextGiftRoomLater(round, 1200L);
                 }
             });
         } catch (ReflectiveOperationException | RuntimeException failure) {
             log("免费虎粮", target, "失败", "准备送礼失败：" + failure.getClass().getSimpleName());
-            handler.postDelayed(this::nextGiftRoom, 1200L);
+            nextGiftRoomLater(round, 1200L);
         }
     }
 
-    private void fetchGrain(long room, long presenter, int count) throws ReflectiveOperationException {
+    private void fetchGrain(GiftRound round, long room, long presenter, int count)
+            throws ReflectiveOperationException {
         Object body = loader.loadClass("com.duowan.HUYA.GetUserCardPackageReq").getConstructor().newInstance();
         body.getClass().getField("tId").set(body, userId());
         body.getClass().getField("lPid").setLong(body, presenter);
         body.getClass().getField("lHomeOwnerUid").setLong(body, presenter);
-        Class<?> template = loader.loadClass("ryxq.mfg");
-        Object templateMode = template.getField("d").get(null);
         body.getClass().getField("eTempleteType").setInt(body,
-                ((Number) template.getMethod("a").invoke(templateMode)).intValue());
-        Class<?> source = loader.loadClass("ryxq.nh3");
-        Object sourceMode = source.getField("f").get(null);
+                cardPackageOption("ryxq.mfg", "ryxq.ozb", "d"));
         body.getClass().getField("eSource").setInt(body,
-                ((Number) source.getMethod("a").invoke(sourceMode)).intValue());
+                cardPackageOption("ryxq.nh3", "ryxq.nn2", "f"));
         String target = "直播间 " + room;
-        request("com.duowan.biz.wup.gamelive.GameLiveWupFunction$z", body, "免费库存", target, response -> {
+        request("com.duowan.biz.wup.gamelive.GameLiveWupFunction$z", body, "免费库存", target, round, response -> {
             try {
                 Object entries = response == null ? null : value(response, "vUserCardItemCountLists");
                 if (!(entries instanceof List)) {
                     log("免费虎粮", target, "跳过", "未收到有效的免费背包库存，没有发送礼物");
-                    handler.postDelayed(this::nextGiftRoom, 1200L);
+                    nextGiftRoomLater(round, 1200L);
                     return;
                 }
                 long free = 0;
@@ -620,15 +702,30 @@ final class DailyAutomation {
                 log("免费库存", target, "成功", "服务端返回可用免费虎粮 " + Math.max(0, free));
                 if (free < count) {
                     log("免费虎粮", target, "跳过", "免费库存不足，需要 " + count + "，当前可用 " + Math.max(0, free));
-                    handler.postDelayed(this::nextGiftRoom, 1200L);
-                } else prepareGrain(room, presenter, count, free);
+                    nextGiftRoomLater(round, 1200L);
+                } else prepareGrain(round, room, presenter, count, free);
             } catch (ReflectiveOperationException | RuntimeException failure) {
                 Throwable cause = failure.getCause() == null ? failure : failure.getCause();
                 log("免费虎粮", target, "失败", "免费库存或送礼接口不匹配："
                         + cause.getClass().getSimpleName() + " · " + cause.getMessage());
-                handler.postDelayed(this::nextGiftRoom, 1200L);
+                nextGiftRoomLater(round, 1200L);
             }
         });
+    }
+
+    private int cardPackageOption(String legacyClass, String currentClass, String field)
+            throws ReflectiveOperationException {
+        try {
+            return cardPackageOption(legacyClass, field);
+        } catch (ClassNotFoundException | NoSuchFieldException | NoSuchMethodException oldOptionAbsent) {
+            return cardPackageOption(currentClass, field);
+        }
+    }
+
+    private int cardPackageOption(String className, String field) throws ReflectiveOperationException {
+        Class<?> type = loader.loadClass(className);
+        Object option = type.getField(field).get(null);
+        return ((Number) type.getMethod("a").invoke(option)).intValue();
     }
 
     private void installGiftGuard() throws ReflectiveOperationException {
@@ -642,8 +739,7 @@ final class DailyAutomation {
             try {
                 Object request = chain.proceed();
                 Object pay = value(request, "tPayPloy");
-                boolean valid = !limit.blocked && loggedInUid() == account
-                    && giftAllowed()
+                boolean valid = !limit.blocked && isGiftRoundCurrent(limit.round)
                     && ((Number) value(request, "lGiftUid")).longValue() == limit.presenter
                     && ((Number) value(request, "lRoomUid")).longValue() == limit.presenter
                     && ((Number) value(request, "iItemCount")).intValue() == limit.count
@@ -664,24 +760,24 @@ final class DailyAutomation {
         giftGuardInstalled = true;
     }
 
-    private void prepareGrain(long room, long presenter, int count, long freeCount) {
+    private void prepareGrain(GiftRound round, long room, long presenter, int count, long freeCount) {
         handler.postDelayed(() -> {
-            if (!giftAllowed()) { nextGiftRoom(); return; }
-            try { executePrepareGrain(room, presenter, count, freeCount); }
+            if (!continueGiftRound(round)) return;
+            try { executePrepareGrain(round, room, presenter, count, freeCount); }
             catch (ReflectiveOperationException | RuntimeException failure) {
                 log("免费虎粮", "", "失败", "道具接口不可用，未送礼");
-                nextGiftRoom();
+                nextGiftRoom(round);
             }
         }, requestInterval);
     }
 
-    private void executePrepareGrain(long room, long presenter, int count, long freeCount)
+    private void executePrepareGrain(GiftRound round, long room, long presenter, int count, long freeCount)
             throws ReflectiveOperationException {
         Class<?> propsType = loader.loadClass("com.duowan.kiwi.props.api.component.IPropsModule");
         Object prop = propsType.getMethod("getPropAnyWay", int.class).invoke(propsModule(), 4);
         Class<?> propType = loader.loadClass("com.duowan.kiwi.props.api.bean.PropItem");
         if (prop != null && Boolean.TRUE.equals(propType.getMethod("isTigerFoodId").invoke(prop))) {
-            sendGrain(room, presenter, count, freeCount, prop);
+            sendGrain(round, room, presenter, count, freeCount, prop);
             return;
         }
         Class<?> builderType = loader.loadClass("com.duowan.kiwi.props.api.request.SendGiftParam$Builder");
@@ -693,24 +789,23 @@ final class DailyAutomation {
         Object empty = loader.loadClass("kotlin.coroutines.EmptyCoroutineContext").getField("INSTANCE").get(null);
         final boolean[] finished = {false};
         String target = "直播间 " + room;
-        long metadataAccount = account;
         Result accept = info -> {
             if (finished[0]) return;
             finished[0] = true;
-            if (account != metadataAccount) return;
+            if (!continueGiftRound(round)) return;
             try {
                 if (info == null || !propType.isInstance(info)
                         || !Boolean.TRUE.equals(propType.getMethod("isTigerFoodId").invoke(info))) {
                     log("虎粮道具信息", target, "失败", "未获取到有效的虎粮道具资料，没有送礼");
-                    handler.postDelayed(this::nextGiftRoom, 1200L);
+                    nextGiftRoomLater(round, 1200L);
                 } else {
                     log("虎粮道具信息", target, "成功", "已核实为虎粮道具");
-                    sendGrain(room, presenter, count, freeCount, info);
+                    sendGrain(round, room, presenter, count, freeCount, info);
                 }
             } catch (ReflectiveOperationException | RuntimeException failure) {
                 Throwable cause = failure.getCause() == null ? failure : failure.getCause();
                 log("免费虎粮", target, "失败", cause.getClass().getSimpleName() + " · " + cause.getMessage());
-                handler.postDelayed(this::nextGiftRoom, 1200L);
+                nextGiftRoomLater(round, 1200L);
             }
         };
         Object continuation = Proxy.newProxyInstance(loader, new Class<?>[]{continuationType}, (proxy, method, args) -> {
@@ -735,15 +830,17 @@ final class DailyAutomation {
         handler.postDelayed(() -> {
             if (!finished[0]) {
                 finished[0] = true;
+                if (!continueGiftRound(round)) return;
                 log("虎粮道具信息", target, "结果未确认", "道具资料查询超时，没有送礼");
-                if (account == metadataAccount) handler.postDelayed(this::nextGiftRoom, 1200L);
+                nextGiftRoomLater(round, 1200L);
             }
         }, 30000L);
     }
 
-    private void sendGrain(long room, long presenter, int count, long freeCount, Object prop) {
+    private void sendGrain(GiftRound round, long room, long presenter, int count, long freeCount, Object prop) {
         handler.postDelayed(() -> {
-            try { executeSendGrain(room, presenter, count, freeCount, prop); }
+            if (!continueGiftRound(round)) return;
+            try { executeSendGrain(round, room, presenter, count, freeCount, prop); }
             catch (ReflectiveOperationException | RuntimeException failure) {
                 log("免费虎粮", "", "未确认", "送礼接口不可用，本轮停止");
                 skipRemainingGifts("送礼接口异常，未继续发送");
@@ -753,12 +850,9 @@ final class DailyAutomation {
         }, requestInterval);
     }
 
-    private void executeSendGrain(long room, long presenter, int count, long freeCount, Object prop)
+    private void executeSendGrain(GiftRound round, long room, long presenter, int count, long freeCount, Object prop)
             throws ReflectiveOperationException {
         installGiftGuard();
-        if (loggedInUid() != account || !giftAllowed()) {
-            throw new IllegalStateException("Account or gift switch changed");
-        }
         Class<?> propType = loader.loadClass("com.duowan.kiwi.props.api.bean.PropItem");
         Object pay = loader.loadClass("com.duowan.kiwi.props.api.utils.SendGiftPayPloyUtil")
                 .getMethod("createPayPloy", float.class, float.class, long.class, boolean.class)
@@ -776,9 +870,8 @@ final class DailyAutomation {
         builderType.getMethod("receiveUid", long.class).invoke(builder, presenter);
         builderType.getMethod("payPloy", pay.getClass()).invoke(builder, pay);
         Object params = builderType.getMethod("build").invoke(builder);
-        GiftLimit limit = new GiftLimit(presenter, count, freeCount);
+        GiftLimit limit = new GiftLimit(round, presenter, count, freeCount);
         guardedGifts.put(params, limit);
-        final long giftAccount = account;
         String target = "直播间 " + room + " · " + count + " 个免费虎粮";
         Class<?> callbackType = loader.loadClass("com.duowan.kiwi.props.api.request.ISendGiftCallback");
         final boolean[] finished = {false};
@@ -789,8 +882,8 @@ final class DailyAutomation {
                     if (finished[0]) return;
                     finished[0] = true;
                     limit.blocked = true;
-                    if (account != giftAccount) {
-                        log("免费虎粮", target, "结果未确认", "任务执行期间已切换账号，请核对原账号记录");
+                    if (!continueGiftRound(round)) {
+                        log("免费虎粮", target, "结果未确认", "任务已中断，请核对原账号的赠送记录");
                         return;
                     }
                     if (result != null && result.getClass().getName().equals(
@@ -802,8 +895,9 @@ final class DailyAutomation {
                         log("免费虎粮", target, "未完成", result == null ? "回执缺失" : result.getClass().getSimpleName());
                         skipRemainingGifts("前一笔赠送未成功，本轮停止后续赠送");
                         log("免费虎粮", "", "停止", "本次送礼未成功，保留剩余免费虎粮");
+                        finishDiceGift(false, "本次未收到免费虎粮成功回执，不领取骰子奖励");
                     }
-                    handler.postDelayed(this::nextGiftRoom, 1500L);
+                    nextGiftRoomLater(round, 1500L);
                 });
                 return null;
             }
@@ -816,11 +910,12 @@ final class DailyAutomation {
         Method send = serviceType.getMethod("sendGiftCompat", params.getClass(), callbackType);
         Object giftService = service(serviceType.getName());
         if (giftService == null) throw new IllegalStateException("Gift service unavailable");
-        if (!claim(diceGiftKey == null ? dailyGiftKey(presenter)
-                : "dice-gift-send/" + activeDay + "/" + diceGiftKey)) {
+        if (!continueGiftRound(round)) return;
+        if (!claim(diceGiftKey == null ? dailyGiftKey(round, presenter)
+                : "dice-gift-send/" + round.day + "/" + diceGiftKey)) {
             limit.blocked = true;
             log("免费虎粮", target, "跳过", "今日已经提交过该主播的赠送，不重复发送");
-            handler.postDelayed(this::nextGiftRoom, 1200L);
+            nextGiftRoomLater(round, 1200L);
             return;
         }
         if (diceGiftKey == null) attemptedGiftRooms.add(room);
@@ -830,18 +925,19 @@ final class DailyAutomation {
             if (!finished[0]) {
                 finished[0] = true;
                 limit.blocked = true;
-                if (account == giftAccount) skipRemainingGifts("前一笔赠送结果未确认，本轮停止后续赠送");
+                if (giftRound == round) skipRemainingGifts("前一笔赠送结果未确认，本轮停止后续赠送");
                 log("免费虎粮", target, "结果未确认", "等待回执超时，停止后续赠送，不自动重发");
             }
         }, 30000L);
     }
 
-    private String dailyGiftKey(long presenter) {
-        return "gift-send/" + activeDay + "/" + presenter;
+    private String dailyGiftKey(GiftRound round, long presenter) {
+        return "gift-send/" + round.day + "/" + presenter;
     }
 
     private void skipRemainingGifts(String reason) {
         giftActive = false;
+        giftRound = null;
         Map.Entry<Long, Integer> pending;
         while ((pending = giftRooms.poll()) != null) {
             log("免费虎粮", "直播间 " + pending.getKey() + " · " + pending.getValue() + " 个免费虎粮",

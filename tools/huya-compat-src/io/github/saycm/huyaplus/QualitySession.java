@@ -1,13 +1,20 @@
 package io.github.saycm.huyaplus;
 
 final class QualitySession {
+    private static final int MAX_ATTEMPTS = 5;
     private int generation;
+    private int attempts;
     private boolean finished;
     private boolean queued;
+    private boolean noticeShown;
+    private long noticeAfter;
 
     synchronized int enter() {
+        attempts = 0;
         finished = false;
         queued = false;
+        noticeShown = false;
+        noticeAfter = Long.MIN_VALUE;
         return ++generation;
     }
 
@@ -20,8 +27,14 @@ final class QualitySession {
     }
 
     synchronized boolean queue(int token) {
-        if (!pending(token) || queued) return false;
+        if (!pending(token) || queued || attempts >= MAX_ATTEMPTS) return false;
         queued = true;
+        return true;
+    }
+
+    synchronized boolean beginAttempt(int token) {
+        if (!pending(token)) return false;
+        attempts++;
         return true;
     }
 
@@ -37,5 +50,23 @@ final class QualitySession {
 
     synchronized void manualSelection() {
         finished = true;
+    }
+
+    synchronized void deferNotice(int token, long time) {
+        if (token == generation) noticeAfter = time;
+    }
+
+    synchronized boolean noticePending(int token) {
+        return token == generation && !noticeShown;
+    }
+
+    synchronized boolean noticeReady(int token, long now) {
+        return noticePending(token) && !queued && now >= noticeAfter;
+    }
+
+    synchronized boolean claimNotice(int token, long now) {
+        if (!noticeReady(token, now)) return false;
+        noticeShown = true;
+        return true;
     }
 }

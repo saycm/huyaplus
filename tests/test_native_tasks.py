@@ -435,12 +435,25 @@ public class NativeTransportTest {
   TaskWire.Struct request=new TaskWire.Struct().field(1,payload);
   if("click".equals(args[0]))request.field(2,
    "https://huya.com?hyaction=welfarepage&fromid=goldtask&taskid=15");
-  new HuyaTaskClient(NativeTransportTest.class.getClassLoader()).send(12,servant,function,
+  ClassLoader loader=NativeTransportTest.class.getClassLoader();
+  if("current-version".equals(args[0])){
+   loader=new ClassLoader(loader){
+    @Override public Class<?> loadClass(String name)throws ClassNotFoundException{
+     switch(name){
+      case "ryxq.xxe": case "ryxq.ev6": return Object.class;
+      case "ryxq.fwa": return ryxq.xxe.class;
+      case "ryxq.d05": return ryxq.ev6.class;
+      default: return super.loadClass(name);
+     }
+    }
+   };
+  }
+  new HuyaTaskClient(loader).send(12,servant,function,
    request,(body,result)->{calls[0]++;code[0]=result;});
   if(calls[0]!=1)throw new AssertionError("callback delivered "+calls[0]+" times");
   boolean rejected=Arrays.asList("logout","changed","download","widget-report").contains(args[0]);
   if(rejected&&ryxq.ev6.count!=0)throw new AssertionError("unsafe request dispatched");
-  boolean shouldSucceed=Arrays.asList("success","progress","coop","click").contains(args[0]);
+  boolean shouldSucceed=Arrays.asList("success","current-version","progress","coop","click").contains(args[0]);
   if((!shouldSucceed)!=(code[0]!=0))throw new AssertionError("response status");
  }
 }''',
@@ -455,11 +468,11 @@ public class NativeTransportTest {
                 sources.append(str(path))
             sources += [str(ROOT / f"tools/huya-compat-src/io/github/saycm/huyaplus/{name}.java")
                         for name in ("TaskWire", "GlassSettings", "NativeTaskCatalog",
-                                     "NativeTaskRunner", "HuyaTaskClient")]
+                                     "NativeTaskRunner", "HuyaTaskClient", "HuyaComponents")]
             result = subprocess.run([str(JDK / "bin" / ("javac" + EXE)), "-encoding", "UTF-8", "-d", str(root), *sources],
                                     capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
             self.assertEqual(result.returncode, 0, result.stderr)
-            for case in ("success", "malformed", "error", "logout", "changed", "download",
+            for case in ("success", "current-version", "malformed", "error", "logout", "changed", "download",
                          "click", "widget-report", "coop", "progress", "video-normal", "video-denied",
                          "video-off", "video-unknown", "video-account"):
                 with self.subTest(case=case):

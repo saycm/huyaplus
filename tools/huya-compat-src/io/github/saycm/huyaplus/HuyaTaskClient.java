@@ -1,5 +1,6 @@
 package io.github.saycm.huyaplus;
 
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -12,7 +13,7 @@ final class HuyaTaskClient {
 
     long loggedInUid() throws ReflectiveOperationException {
         Class<?> component = loader.loadClass("com.duowan.kiwi.base.login.api.ILoginComponent");
-        Object instance = loader.loadClass("ryxq.xxe").getMethod("i", Class.class).invoke(null, component);
+        Object instance = HuyaComponents.get(loader, component);
         Object login = component.getMethod("getLoginModule").invoke(instance);
         Class<?> type = loader.loadClass("com.duowan.kiwi.base.login.api.ILoginModule");
         if (!Boolean.TRUE.equals(type.getMethod("isLogin").invoke(login))) return 0;
@@ -22,7 +23,7 @@ final class HuyaTaskClient {
     boolean notificationEnabled(Object context) throws ReflectiveOperationException {
         Class<?> contextType = loader.loadClass("android.content.Context");
         Class<?> type = loader.loadClass("com.duowan.kiwi.push.IPushModule");
-        Object module = loader.loadClass("ryxq.xxe").getMethod("i", Class.class).invoke(null, type);
+        Object module = HuyaComponents.get(loader, type);
         return Boolean.TRUE.equals(type.getMethod("isNotificationEnabled", contextType)
                 .invoke(module, context));
     }
@@ -190,9 +191,15 @@ final class HuyaTaskClient {
                 }
                 return null;
             });
-            Object nativeRequest = loader.loadClass("ryxq.ev6")
-                    .getMethod("a", packetType, int.class, int.class, Number.class, callbackType)
-                    .invoke(null, packet, 0, 15000, null, callback);
+            Method requestFactory;
+            try {
+                requestFactory = loader.loadClass("ryxq.ev6").getMethod(
+                        "a", packetType, int.class, int.class, Number.class, callbackType);
+            } catch (ClassNotFoundException | NoSuchMethodException oldFactoryAbsent) {
+                requestFactory = loader.loadClass("ryxq.d05").getMethod(
+                        "a", packetType, int.class, int.class, Number.class, callbackType);
+            }
+            Object nativeRequest = requestFactory.invoke(null, packet, 0, 15000, null, callback);
             nativeRequest.getClass().getMethod("execute").invoke(nativeRequest);
         } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
             if (delivered.compareAndSet(false, true)) reply.complete(new TaskWire.Struct(), -1);

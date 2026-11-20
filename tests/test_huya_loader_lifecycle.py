@@ -12,6 +12,76 @@ JDK = Path(os.environ["JAVA_HOME"])
 EXE = ".exe" if os.name == "nt" else ""
 
 SOURCES = {
+    "android/app/Activity.java": """
+package android.app;
+public class Activity {
+ public void onCreate(android.os.Bundle state){}
+ public void onResume(){}
+ public boolean isFinishing(){return false;}
+ public boolean isDestroyed(){return false;}
+ public boolean hasWindowFocus(){return true;}
+ public android.content.pm.PackageManager getPackageManager(){return new android.content.pm.PackageManager();}
+ public android.content.Context getApplicationContext(){return null;}
+ public android.content.ContentResolver getContentResolver(){
+  return new android.content.ContentResolver();
+ }
+}
+""",
+    "android/content/pm/PackageManager.java": """
+package android.content.pm;
+public class PackageManager {
+ public static String huyaVersion="13.5.62";
+ public static class NameNotFoundException extends Exception {}
+ public PackageInfo getPackageInfo(String name,int flags)throws NameNotFoundException{
+  if(!"com.duowan.kiwi".equals(name)||huyaVersion==null)throw new NameNotFoundException();
+  PackageInfo info=new PackageInfo();info.versionName=huyaVersion;return info;
+ }
+ public String[] getPackagesForUid(int uid){return new String[]{"com.duowan.kiwi"};}
+}
+""",
+    "android/content/pm/PackageInfo.java": """
+package android.content.pm;
+public class PackageInfo {public String versionName;}
+""",
+    "android/content/ContentResolver.java": """
+package android.content;
+import android.os.Bundle;
+public class ContentResolver {
+ public static String rootStatus="granted";
+ public static int rootChecks;
+ public Bundle call(String authority,String method,String arg,Bundle extras){
+  if(!"io.github.saycm.huyaplus.tasks".equals(authority)||!"verify_root".equals(method))
+   throw new AssertionError("Unexpected provider call: "+method);
+  rootChecks++;
+  if("missing".equals(rootStatus))return null;
+  if("unavailable".equals(rootStatus))throw new IllegalArgumentException("provider unavailable");
+  Bundle reply=new Bundle();
+  reply.putBoolean("root_granted","granted".equals(rootStatus));
+  return reply;
+ }
+ public Bundle call(android.net.Uri uri,String method,String arg,Bundle extras){return null;}
+}
+""",
+    "android/os/Bundle.java": """
+package android.os;
+public class Bundle {
+ private final java.util.Map<String,Object> values=new java.util.HashMap<>();
+ public void putBoolean(String key,boolean value){values.put(key,value);}
+ public boolean getBoolean(String key){return Boolean.TRUE.equals(values.get(key));}
+ public boolean getBoolean(String key,boolean fallback){return (Boolean)values.getOrDefault(key,fallback);}
+ public void putString(String key,String value){values.put(key,value);}
+ public String getString(String key,String fallback){return (String)values.getOrDefault(key,fallback);}
+ public void putLong(String key,long value){values.put(key,value);}
+ public long getLong(String key){return (Long)values.getOrDefault(key,0L);}
+ public void putInt(String key,int value){values.put(key,value);}
+ public int getInt(String key,int fallback){return (Integer)values.getOrDefault(key,fallback);}
+ public <T> void putParcelableArrayList(String key,java.util.ArrayList<T> value){values.put(key,value);}
+ @SuppressWarnings("unchecked")
+ public <T> java.util.ArrayList<T> getParcelableArrayList(String key){
+  return (java.util.ArrayList<T>)values.get(key);
+ }
+}
+""",
     "android/util/Log.java": """
 package android.util;
 public final class Log {
@@ -180,7 +250,12 @@ public class LoaderLifecycleTest {
  }
  static final class ActivityLoader extends ClassLoader {
   final List<String> requests=new ArrayList<>();
-  ActivityLoader(){super(LoaderLifecycleTest.class.getClassLoader());}
+  final boolean currentVersion;
+  ActivityLoader(){this(false);}
+  ActivityLoader(boolean currentVersion){
+   super(LoaderLifecycleTest.class.getClassLoader());
+   this.currentVersion=currentVersion;
+  }
   public Class<?> loadClass(String name) throws ClassNotFoundException {
    if("LoaderActivity".equals(name)){
     Class<?> loaded=findLoadedClass(name);
@@ -200,7 +275,8 @@ public class LoaderLifecycleTest {
     return super.loadClass(name);
    }
    requests.add(name);
-   if("ryxq.weg".equals(name))return super.loadClass(name);
+   if("ryxq.weg".equals(name))return currentVersion?Object.class:super.loadClass(name);
+   if(currentVersion&&"ryxq.izb".equals(name))return super.loadClass(name);
    throw new ClassNotFoundException(name);
   }
  }
@@ -225,7 +301,8 @@ public class LoaderLifecycleTest {
    throw new AssertionError("Package-ready loader initialized business hooks: "+target.requests);
 
   try{
-   ActivityLoader activityLoader=new ActivityLoader();
+   boolean currentVersion=args.length>0;
+   ActivityLoader activityLoader=new ActivityLoader(currentVersion);
    Object activity=activityLoader.loadClass("LoaderActivity").getDeclaredConstructor().newInstance();
    try{
     XposedModule.invokeHook(
@@ -235,7 +312,7 @@ public class LoaderLifecycleTest {
     throw new AssertionError(ignored);
    }
    try {
-    ryxq.weg guide=new ryxq.weg();
+    ryxq.weg guide=currentVersion?new ryxq.izb():new ryxq.weg();
     XposedModule.call(guide,"shouldShowGuideDialog",new Class<?>[]{boolean.class},true);
     if(guide.showGuide)throw new AssertionError("startup guide flag remained enabled");
     if(!Boolean.FALSE.equals(XposedModule.call(guide,"shouldShowGuideDialog",new Class<?>[]{})))
@@ -275,8 +352,36 @@ public class LoaderLifecycleTest {
  }
 }
 """,
+    "RootGateTest.java": """
+import android.app.Activity;
+import android.content.ContentResolver;
+import android.os.Bundle;
+import io.github.libxposed.api.XposedModule;
+import io.github.saycm.huyaplus.HuyaCompatEntry;
+
+public final class RootGateTest {
+ public static void main(String[] args) throws Throwable {
+  ContentResolver.rootStatus=args[0];
+  if(args.length>1)android.content.pm.PackageManager.huyaVersion="missing".equals(args[1])?null:args[1];
+  boolean supported=args.length==1||"13.5.62".equals(args[1]);
+  HuyaCompatEntry entry=new HuyaCompatEntry();
+  entry.onPackageReady(new LoaderLifecycleTest.Param("com.duowan.kiwi",new LoaderLifecycleTest.Recorder()));
+  ClassLoader loader=new LoaderLifecycleTest.ActivityLoader();
+  Object activity=loader.loadClass("LoaderActivity").getDeclaredConstructor().newInstance();
+  var onCreate=Activity.class.getDeclaredMethod("onCreate",Bundle.class);
+  var chain=new LoaderLifecycleTest.ActivityChain(activity);
+  XposedModule.invokeHook(onCreate,chain);
+  XposedModule.invokeHook(onCreate,chain);
+  if(ContentResolver.rootChecks!=(supported?1:0))
+   throw new AssertionError("Check Root only for supported Huya");
+  boolean initialized=!((LoaderLifecycleTest.ActivityLoader)loader).requests.isEmpty();
+  if(initialized!=(supported&&"granted".equals(args[0])))
+   throw new AssertionError("Unexpected business hook state: "+args[0]);
+ }
+}
+""",
     "LoaderActivity.java": """
-public final class LoaderActivity {
+public final class LoaderActivity extends android.app.Activity {
  public LoaderActivity(){}
 }
 """,
@@ -290,12 +395,313 @@ public class weg {
  public void lock(int type){locks++;}
 }
 """,
+    "ryxq/izb.java": """
+package ryxq;
+public class izb extends weg {
+ @Override public void shouldShowGuideDialog(boolean value){super.shouldShowGuideDialog(value);}
+ @Override public boolean shouldShowGuideDialog(){return super.shouldShowGuideDialog();}
+ @Override public void lock(int type){super.lock(type);}
+}
+""",
 }
 
 
-for automation_class in ("DailyAutomation", "TaskLogProvider", "AutomationRules", "LocalTaskStore",
+QUALITY_SOURCES = {
+    "android/widget/Toast.java": """
+package android.widget;
+public class Toast {
+ public static final int LENGTH_SHORT=0;
+ public static final java.util.List<String> shown=new java.util.ArrayList<>();
+ private String text;
+ public static Toast makeText(android.content.Context context,CharSequence text,int duration){
+  Toast toast=new Toast();
+  toast.text=text.toString();
+  return toast;
+ }
+ public void show(){shown.add(text);}
+ public void cancel(){}
+}
+""",
+    "android/os/Looper.java": """
+package android.os;
+public class Looper {
+ public static Looper getMainLooper(){return new Looper();}
+}
+""",
+    "android/os/Handler.java": """
+package android.os;
+import java.util.ArrayDeque;
+import java.util.Queue;
+public class Handler {
+ public static final Queue<Runnable> callbacks=new ArrayDeque<>();
+ public Handler(Looper looper){}
+ public boolean postDelayed(Runnable task,long delay){return callbacks.add(task);}
+ public boolean post(Runnable task){return callbacks.add(task);}
+}
+""",
+    "android/util/Pair.java": """
+package android.util;
+public class Pair<F,S> {
+ public final F first;
+ public final S second;
+ public Pair(F first,S second){this.first=first;this.second=second;}
+}
+""",
+    "DefaultQualityHookTest.java": """
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.os.Handler;
+import android.util.Pair;
+import android.widget.Toast;
+import io.github.libxposed.api.XposedModule;
+import io.github.saycm.huyaplus.HuyaCompatEntry;
+import java.lang.reflect.*;
+import java.util.*;
+
+public class DefaultQualityHookTest {
+ public static class ChannelPage {
+  public void onCreate(Bundle state){}
+  public void onNewIntent(Intent intent){}
+ }
+ public static class NoticePage extends android.app.Activity {
+  public void onCreate(Bundle state){}
+  public void onNewIntent(Intent intent){}
+ }
+ public static class StreamPanel {
+  int picks;
+  public void onClickRateItem(Rate rate){picks++;}
+ }
+ public static class LineData {
+  public void setMultiLineInfo(List<Rate> rates,Runnable duringUpdate,int unused){
+   line.rates=rates;
+   if(duringUpdate!=null)duringUpdate.run();
+  }
+ }
+ public static class Rate {
+  final int bitrate;
+  Rate(int bitrate){this.bitrate=bitrate;}
+  public int getBitrate(){return bitrate;}
+    public String getDisplayName(){return bitrate==0?"蓝光":bitrate==8000?"蓝光 8M":"超清";}
+  public int getHEVCBitRate(){return bitrate==8000?7200:0;}
+ }
+ public static class Line {
+  List<Rate> rates;
+  public int getLineIndex(){return 1;}
+  public List<Rate> getBitrateInfoList(){return rates;}
+ }
+ public static class MultiLineModule {
+  int failures,requests,selected;
+  public boolean isInChannel(){return true;}
+  public long getPlayId(){return 17;}
+    public int getOriginalBitrate(long playId){return playId==17?3000:0;}
+  public int getLineIndex(){return 1;}
+  public Pair<List<Line>,List<Line>> getLines(){return new Pair<>(List.of(line),List.of());}
+  public void switchLineTo(int lineIndex,int bitrate,boolean manual){
+   requests++;
+   if(failures>0){failures--;throw new IllegalStateException("temporary failure");}
+   selected=bitrate;
+  }
+ }
+ public static class LiveComponent {
+  public MultiLineModule getMultiLineModule(){return module;}
+ }
+ public static class PlayerComponent {
+  public PlayerModule getLivePlayerModule(){return new PlayerModule();}
+ }
+ public static class PlayerModule {
+  public Player getMultiVideoPlayer(long playId){return playId==17?player:null;}
+ }
+ public static class Player {
+  boolean playing;
+  int bitrate=7200;
+  public boolean isVideoPlaying(){return playing;}
+  public int getCurrentBitrate(){return bitrate;}
+ }
+ public static class ComponentRegistry {
+  public static Object i(Class<?> type){
+   return type==PlayerComponent.class?new PlayerComponent():new LiveComponent();
+  }
+ }
+ static final ChannelPage page=new ChannelPage();
+ static final LineData data=new LineData();
+ static final Line line=new Line();
+ static final MultiLineModule module=new MultiLineModule();
+ static final Player player=new Player();
+ static final List<Rate> target=List.of(new Rate(2000));
+ static int preference=2000;
+
+ static void check(boolean value,String message){
+  if(!value)throw new AssertionError(message);
+ }
+ static void enter() throws Throwable{
+  XposedModule.call(page,"onNewIntent",new Class<?>[]{Intent.class},(Object)null);
+ }
+ static void update(List<Rate> rates,Runnable duringUpdate) throws Throwable{
+  XposedModule.call(data,"setMultiLineInfo",
+   new Class<?>[]{List.class,Runnable.class,int.class},rates,duringUpdate,0);
+ }
+ static void dispatch(){
+  Runnable callback=Handler.callbacks.poll();
+  check(callback!=null,"Missing scheduled quality attempt");
+  callback.run();
+ }
+ public static void main(String[] args) throws Throwable{
+  HuyaCompatEntry entry=new HuyaCompatEntry();
+  Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+  prefs.setAccessible(true);
+  prefs.set(entry,Proxy.newProxyInstance(getClassLoader(),new Class<?>[]{SharedPreferences.class},
+   (proxy,method,values)->preference));
+  Method hook=HuyaCompatEntry.class.getDeclaredMethod("hookDefaultQuality",ClassLoader.class);
+  hook.setAccessible(true);
+  hook.invoke(entry,new ClassLoader(getClassLoader()){
+   public Class<?> loadClass(String name) throws ClassNotFoundException{
+    return switch(name){
+     case "com.duowan.kiwi.liveroom.ChannelPage" ->
+      args[0].startsWith("notice")?NoticePage.class:ChannelPage.class;
+     case "com.duowan.kiwi.live.panel.BaseMultiStreamPanel" -> StreamPanel.class;
+     case "com.duowan.kiwi.live.multiline.data.MultiLineData" -> LineData.class;
+     case "com.duowan.kiwi.live.model.MultiBitrateInfo" -> Rate.class;
+     case "com.duowan.kiwi.live.model.ABSLine" -> Line.class;
+     case "com.duowan.kiwi.live.api.ILiveComponent" -> LiveComponent.class;
+     case "com.duowan.kiwi.live.api.multiline.IMultiLineModule" -> MultiLineModule.class;
+     case "com.duowan.kiwi.player.ILivePlayerComponent" -> PlayerComponent.class;
+     case "com.duowan.kiwi.player.ILivePlayerModule" -> PlayerModule.class;
+     case "com.duowan.kiwi.player.ILivePlayer" -> Player.class;
+     case "ryxq.xxe" -> {
+      if(args.length>1)throw new ClassNotFoundException(name);
+      yield ComponentRegistry.class;
+     }
+     case "ryxq.fwa" -> {
+      if(args.length==1)throw new ClassNotFoundException(name);
+      yield ComponentRegistry.class;
+     }
+     default -> super.loadClass(name);
+    };
+   }
+  });
+  if("notice".equals(args[0])){
+   preference=-1;
+   line.rates=List.of(new Rate(8000),new Rate(2000));
+   NoticePage room=new NoticePage();
+   XposedModule.call(room,"onCreate",new Class<?>[]{Bundle.class},(Object)null);
+   dispatch();
+   check(Toast.shown.isEmpty(),"Wait for the player to start");
+   XposedModule.call(room,"onNewIntent",new Class<?>[]{Intent.class},(Object)null);
+   player.playing=true;
+   dispatch();
+   check(Toast.shown.isEmpty(),"Discard the previous room's callback");
+   dispatch();
+   check(Toast.shown.equals(List.of("当前画质：蓝光 8M")),
+    "Display the player's active HEVC tier when following Huya");
+   update(target,null);
+   dispatch();
+   check(Handler.callbacks.isEmpty()&&Toast.shown.size()==1,
+    "Further line metadata must not repeat the notice");
+   return;
+  }
+    if("notice-original".equals(args[0])){
+     preference=-1;
+     line.rates=List.of(new Rate(0),new Rate(2000));
+     NoticePage room=new NoticePage();
+     player.playing=true;
+     player.bitrate=3100;
+     XposedModule.call(room,"onCreate",new Class<?>[]{Bundle.class},(Object)null);
+     dispatch();
+     check(Toast.shown.isEmpty(),"An unrecognized bitrate must wait for a match");
+     player.bitrate=3000;
+     dispatch();
+     check(Toast.shown.equals(List.of("当前画质：蓝光")),
+      "Show the zero tier using the room's original bitrate");
+     player.bitrate=2000;
+     XposedModule.call(room,"onNewIntent",new Class<?>[]{Intent.class},(Object)null);
+     dispatch();
+     check(Toast.shown.equals(List.of("当前画质：蓝光","当前画质：超清")),
+      "Show the actual transcoded tier after entering another room");
+     return;
+    }
+  XposedModule.call(page,"onCreate",new Class<?>[]{Bundle.class},(Object)null);
+  switch(args[0]){
+   case "retry" -> {
+    update(List.of(),null);
+    dispatch();
+    update(List.of(new Rate(500)),null);
+    dispatch();
+    check(module.requests==0,"Do not switch to an unavailable bitrate");
+    check(!Handler.callbacks.isEmpty(),"Unavailable target must remain eligible for retry");
+    line.rates=target;
+    dispatch();
+    check(module.requests==1&&module.selected==2000,"Apply the target once it becomes available");
+   }
+   case "switch-error" -> {
+    module.failures=1;
+    update(target,null);
+    dispatch();
+    dispatch();
+    check(module.requests==2&&module.selected==2000,"Retry a failed switch and apply the target");
+    update(target,null);
+    check(Handler.callbacks.isEmpty(),"Do not switch again once successful");
+   }
+   case "bounded" -> {
+    update(List.of(),null);
+    for(int attempt=0;attempt<5;attempt++)dispatch();
+    check(Handler.callbacks.isEmpty(),"Stop retries after five attempts");
+    update(target,null);
+    check(Handler.callbacks.isEmpty(),"Metadata updates cannot reset the room's retry budget");
+    enter();
+    update(target,null);
+    dispatch();
+    check(module.requests==1,"A new room receives a fresh retry budget");
+   }
+   case "stale" -> {
+    update(target,()->{
+     try{enter();}catch(Throwable failure){throw new AssertionError(failure);}
+    });
+    check(Handler.callbacks.isEmpty(),"An update overtaken by room entry cannot schedule a switch");
+    update(target,null);
+    enter();
+    update(target,null);
+    dispatch();
+    check(module.requests==0,"A scheduled callback cannot switch a different room");
+    dispatch();
+    check(module.requests==1,"The current room retains its scheduled attempt");
+   }
+   case "manual" -> {
+    update(target,null);
+    StreamPanel panel=new StreamPanel();
+    XposedModule.call(panel,"onClickRateItem",new Class<?>[]{Rate.class},new Rate(500));
+    dispatch();
+    update(target,null);
+    check(panel.picks==1&&module.requests==0&&Handler.callbacks.isEmpty(),
+     "Manual selection takes precedence over pending and later automatic attempts");
+   }
+   case "follow" -> {
+    preference=-1;
+    for(int update=0;update<5;update++){
+     update(target,null);
+     dispatch();
+    }
+    check(module.requests==0,"Following Huya leaves the bitrate to Huya");
+    preference=2000;
+    update(target,null);
+    dispatch();
+    check(module.requests==1,"Following Huya does not spend the room's retry budget");
+   }
+   default -> throw new AssertionError(args[0]);
+  }
+ }
+ static ClassLoader getClassLoader(){return DefaultQualityHookTest.class.getClassLoader();}
+}
+""",
+}
+
+
+QUALITY_SOURCES["RootGateTest.java"] = SOURCES.pop("RootGateTest.java")
+
+for automation_class in ("DailyAutomation", "TaskLogProvider", "RootAccess", "AutomationRules", "LocalTaskStore",
                          "NativeTaskAutomation", "NativeTaskRunner", "NativeTaskCatalog", "TaskWire", "HuyaTaskClient",
-                         "DiceTaskRunner", "DiceTaskCatalog", "DiceMissionRunner", "WelfareSignRunner"):
+                         "DiceTaskRunner", "DiceTaskCatalog", "DiceMissionRunner", "WelfareSignRunner",
+                         "HuyaComponents", "HuyaVersion"):
     automation_path = f"io/github/saycm/huyaplus/{automation_class}.java"
     SOURCES[automation_path] = (ROOT / "tools/huya-compat-src" / automation_path).read_text(encoding="utf-8")
 SOURCES["io/github/saycm/huyaplus/LiveQuality.java"] = (
@@ -311,7 +717,7 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="huya-loader-") as folder:
             root = Path(folder)
             sources = []
-            for name, content in SOURCES.items():
+            for name, content in {**SOURCES, **QUALITY_SOURCES}.items():
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content, encoding="utf-8")
@@ -360,6 +766,29 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             print(result.stdout.strip())
+            result = subprocess.run(
+                [
+                    str(JDK / "bin" / ("java" + EXE)),
+                    "-cp",
+                    os.pathsep.join([str(root / "classes"), str(android)]),
+                    "LoaderLifecycleTest", "13.5.62",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            root_cases = [(status, "13.5.62") for status in ("granted", "denied", "missing", "unavailable")]
+            root_cases += [("granted", version) for version in ("13.5.44", "13.5.61", "13.5.63", "missing")]
+            for status, version in root_cases:
+                with self.subTest(root=status, version=version):
+                    result = subprocess.run(
+                        [str(JDK / "bin" / ("java" + EXE)), "-cp",
+                         os.pathsep.join([str(root / "classes"), str(android)]),
+                         "RootGateTest", status, version],
+                        capture_output=True, text=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             cases = [
                 ("LSPosed", 1, "", True),
                 ("LSPosed", 7, "", True),
@@ -382,6 +811,20 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
                          os.pathsep.join([str(root / "classes"), str(android)]),
                          "io.github.libxposed.api.FrameworkGateTest", name,
                          str(properties), failure, str(allowed).lower()],
+                        capture_output=True, text=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            quality_cases = [(case,) for case in (
+                "retry", "switch-error", "bounded", "stale", "manual", "follow",
+                "notice", "notice-original")]
+            quality_cases += [("retry", "13.5.62"), ("notice-original", "13.5.62")]
+            for case in quality_cases:
+                with self.subTest(quality=case):
+                    result = subprocess.run(
+                        [str(JDK / "bin" / ("java" + EXE)), "-cp",
+                         os.pathsep.join([str(root / "classes"), str(android)]),
+                         "DefaultQualityHookTest", *case],
                         capture_output=True, text=True,
                         creationflags=subprocess.CREATE_NO_WINDOW,
                     )

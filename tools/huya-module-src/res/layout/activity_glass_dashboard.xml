@@ -113,6 +113,63 @@
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="14dp"
+                android:background="@color/glass_card_stroke"
+                android:importantForAccessibility="no" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="12dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/root_title"
+                        android:textColor="@color/glass_text"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/root_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:accessibilityLiveRegion="polite"
+                        android:text="@string/root_required"
+                        android:textColor="@color/glass_text"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/action_authorize_root"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/accent_button"
+                    android:clipToOutline="true"
+                    android:foreground="?android:attr/selectableItemBackground"
+                    android:minHeight="48dp"
+                    android:minWidth="0dp"
+                    android:paddingStart="15dp"
+                    android:paddingEnd="15dp"
+                    android:text="@string/root_authorize"
+                    android:textAllCaps="false"
+                    android:textColor="@color/hero_text"
+                    android:textSize="13sp" />
+            </LinearLayout>
         </LinearLayout>
 
         <LinearLayout

@@ -37,6 +37,23 @@ public class QualitySessionTest {
   int third = session.enter();
   if (!session.claim(third))
    throw new AssertionError("next room must enable automatic selection");
+
+  if (session.claimNotice(second, 1000L))
+   throw new AssertionError("a previous room must not show a notice");
+  if (!session.claimNotice(third, 1000L) || session.claimNotice(third, 2000L))
+   throw new AssertionError("a room must show at most one notice");
+  int fourth = session.enter();
+  session.queue(fourth);
+  if (session.claimNotice(fourth, 3000L))
+   throw new AssertionError("the notice must wait for the queued quality attempt");
+  session.dequeue(fourth);
+  session.manualSelection();
+  if (!session.claimNotice(fourth, 3000L))
+   throw new AssertionError("manual selection must not prevent reading the current quality");
+  int fifth = session.enter();
+  session.deferNotice(fifth, 4000L);
+  if (session.claimNotice(fifth, 3999L) || !session.claimNotice(fifth, 4000L))
+   throw new AssertionError("the notice must allow a requested switch to settle");
  }
 }""", encoding="utf-8")
             jdk = Path(os.environ["JAVA_HOME"]) / "bin"

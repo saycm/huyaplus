@@ -63,6 +63,7 @@ public class ContentResolver {
  public static final Set<String> claims=new HashSet<>();
  public static final List<Bundle> events=new ArrayList<>();
  public static volatile int imports, completed;
+ public Bundle call(String authority,String method,String arg,Bundle row){return null;}
  public Bundle call(Uri uri,String method,String arg,Bundle row){
   if(delaySync){entered.countDown();try{release.await();}catch(InterruptedException e){throw new RuntimeException(e);}}
   if(blocked)throw new IllegalStateException("Module process must remain stopped");
@@ -75,10 +76,12 @@ public class ContentResolver {
 ''',
     "android/content/Context.java": '''package android.content;
 public class Context {
+ public static final int MODE_PRIVATE=0;
  public static final int RECEIVER_EXPORTED=2;
  public static BroadcastReceiver receiver;
  public Context getApplicationContext(){return this;}
  public ContentResolver getContentResolver(){return new ContentResolver();}
+ public SharedPreferences getSharedPreferences(String name,int mode){return null;}
  public ClassLoader getClassLoader(){return getClass().getClassLoader();}
  public Intent registerReceiver(BroadcastReceiver value,IntentFilter filter){receiver=value;return null;}
  public Intent registerReceiver(BroadcastReceiver value,IntentFilter filter,int flags){receiver=value;return null;}
@@ -235,7 +238,21 @@ public class DailyEngineTest {
     throw new AssertionError("Unexpected preference access");
    });
   Context context=new Context();XposedModule module=new XposedModule(){};
-  DailyAutomation engine=new DailyAutomation(module,prefs,DailyEngineTest.class.getClassLoader());
+  ClassLoader loader=DailyEngineTest.class.getClassLoader();
+  if("current-version".equals(args[0])){
+   loader=new ClassLoader(loader){
+    @Override public Class<?> loadClass(String name)throws ClassNotFoundException{
+     switch(name){
+      case "ryxq.xxe": case "ryxq.jd8": case "ryxq.oe6": return Object.class;
+      case "ryxq.fwa": return xxe.class;
+      case "ryxq.yy5": return jd8.class;
+      case "ryxq.xp4": return oe6.class;
+      default: return super.loadClass(name);
+     }
+    }
+   };
+  }
+  DailyAutomation engine=new DailyAutomation(module,prefs,loader);
   engine.onOpen(context);
   if("disable-running".equals(args[0])){
    signOn[0]=false;
@@ -297,6 +314,10 @@ public class DailyEngineTest {
    }finally{ContentResolver.release.countDown();}
    return;
   }
+  if("current-version".equals(args[0])){
+   if(lists!=1||signs!=2||!has("成功")||!has("未完成"))throw new AssertionError("new WUP callbacks");
+   return;
+  }
   if("success".equals(args[0])||"module-stopped".equals(args[0])||"native-failure".equals(args[0])){
    if(lists!=1||signs!=2||!has("成功")||!has("未完成"))throw new AssertionError("sign results");
    long confirmed=LocalTaskStore.localEvents.stream().filter(x->"粉丝牌打卡".equals(x.getString("task",""))
@@ -342,7 +363,7 @@ class DailyAutomationTest(unittest.TestCase):
                 capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            for case in ("success", "disabled", "logout", "timeout", "module-stopped", "auto-sync",
+            for case in ("success", "current-version", "disabled", "logout", "timeout", "module-stopped", "auto-sync",
                          "sync-during", "sync-storm", "native-failure",
                          "dice-off", "dice-busy", "dice-unavailable", "sync-empty", "disable-running"):
                 with self.subTest(case=case):

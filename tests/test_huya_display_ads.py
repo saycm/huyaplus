@@ -299,7 +299,7 @@ public class DisplayAdsTest {
    new Param(DisplayAdsTest.class.getClassLoader()));
   XposedModule.invokeHook(
    android.app.Activity.class.getDeclaredMethod("onCreate",android.os.Bundle.class),
-   new ActivityChain(new DisplayAdsTest()));
+   new ActivityChain(new android.app.Activity()));
   if(args[0].equals("live-cards")){
    PopupModule module=new PopupModule();
    for(String key:new String[]{"magicboxrecentresult_autotrigger",

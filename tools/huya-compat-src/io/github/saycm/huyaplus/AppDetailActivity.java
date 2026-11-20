@@ -49,11 +49,16 @@ public final class AppDetailActivity extends Activity {
                         .putExtra(MineSettingsActivity.SHOW_NAVIGATION, true)));
         automation = new AutomationPanel(this, (LinearLayout) findViewById(R.id.automation_settings));
 
-        boolean installed = packageInstalled("com.duowan.kiwi");
+        String version = HuyaVersion.installed(this);
+        boolean installed = version != null;
         TextView appStatus = (TextView) findViewById(R.id.app_status);
         Button openApp = (Button) findViewById(R.id.action_open_app);
         if (installed) {
-            appStatus.setText(R.string.app_installed);
+            boolean supported = HuyaVersion.supports(version);
+            appStatus.setText(version.isEmpty() ? getString(R.string.app_unknown_version)
+                    : getString(supported ? R.string.app_supported_version
+                    : R.string.app_unsupported_version, version));
+            appStatus.setTextColor(getColor(supported ? R.color.success_green : R.color.glass_text));
             openApp.setText(R.string.action_open);
             openApp.setOnClickListener(view -> startActivity(launcherIntent()));
         } else {
@@ -83,15 +88,6 @@ public final class AppDetailActivity extends Activity {
         }));
     }
 
-    private boolean packageInstalled(String packageName) {
-        try {
-            getPackageManager().getApplicationInfo(packageName, 0);
-            return true;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
     @Override protected void onDestroy() {
         if (automation != null) automation.destroy();
         super.onDestroy();
@@ -111,7 +107,7 @@ public final class AppDetailActivity extends Activity {
 
     private void bindSwitch(int id, String key) {
         Switch toggle = (Switch) findViewById(id);
-        toggle.setChecked(prefs.getBoolean(key, true));
+        toggle.setChecked(prefs.getBoolean(key, GlassSettings.defaultEnabled(key)));
         toggle.setOnCheckedChangeListener((button, checked) -> {
             prefs.edit().putBoolean(key, checked).apply();
             if (!serviceConnected) {
@@ -147,7 +143,7 @@ public final class AppDetailActivity extends Activity {
 
     private void syncSwitch(int id, String key) {
         Switch toggle = (Switch) findViewById(id);
-        toggle.setChecked(prefs.getBoolean(key, true));
+        toggle.setChecked(prefs.getBoolean(key, GlassSettings.defaultEnabled(key)));
     }
 
     private void showQualityDialog() {

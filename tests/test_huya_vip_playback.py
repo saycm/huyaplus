@@ -75,6 +75,7 @@ public class Vip4KPlayHelper {
 }
 """,
     "VipPlaybackTest.java": """
+import android.content.SharedPreferences;
 import java.lang.reflect.*;
 import com.duowan.kiwi.live.model.MultiBitrateInfo;
 import com.duowan.kiwi.live.vip4k.Vip4KPlayHelper;
@@ -82,6 +83,7 @@ import com.duowan.kiwi.platformvip.impl.PlatformVIPModule;
 import com.duowan.kiwi.popup.api.PopupItem;
 import com.duowan.kiwi.popup.impl.pubscreen.PopupStrategyConditionHelper;
 import io.github.libxposed.api.XposedModule;
+import io.github.saycm.huyaplus.GlassSettings;
 import io.github.saycm.huyaplus.HuyaCompatEntry;
 public class VipPlaybackTest {
  static void check(boolean value,String message){
@@ -102,7 +104,20 @@ public class VipPlaybackTest {
    };
   }
   Method init=HuyaCompatEntry.class.getDeclaredMethod("initializeHooks",ClassLoader.class);
-  init.setAccessible(true);init.invoke(new HuyaCompatEntry(),loader);
+  HuyaCompatEntry entry=new HuyaCompatEntry();
+  if(!args[0].equals("no-preferences")){
+   Boolean vip4k=switch(args[0]){
+    case "4k","login","missing-4k" -> true;
+    case "disabled-4k" -> false;
+    default -> null;
+   };
+   Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+   prefs.setAccessible(true);
+   prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
+    (proxy,method,values)->GlassSettings.KEY_VIP_4K.equals(values[0])&&vip4k!=null
+     ?vip4k:values[1]));
+  }
+  init.setAccessible(true);init.invoke(entry,loader);
   if(args[0].equals("vip-ads")||args[0].equals("missing-4k")){
    PopupStrategyConditionHelper helper=new PopupStrategyConditionHelper();
    PopupItem item=new PopupItem();item.summary.iIsNoShowForPlatformVip=1;
@@ -151,6 +166,9 @@ public class VipPlaybackTest {
     "The account's global membership must remain unchanged");
    check(Boolean.FALSE.equals(call(account,"isActiveInLiveRoom",new Class<?>[0])),
     "The shared membership service must remain unchanged");
+  }else{
+   check(Boolean.FALSE.equals(call(new Vip4KPlayHelper(),"isPlatformVipActive",new Class<?>[0])),
+    "Experimental 4K must be disabled without an explicit opt-in");
   }
   System.out.println("PASS: "+args[0]);
  }
@@ -216,6 +234,11 @@ class HuyaVipPlaybackTest(unittest.TestCase):
 
     def test_missing_4k_class_does_not_disable_ad_filtering(self):
         self.run_case("missing-4k")
+
+    def test_experimental_4k_requires_an_explicit_opt_in(self):
+        for name in ("default-4k", "no-preferences", "disabled-4k"):
+            with self.subTest(preferences=name):
+                self.run_case(name)
 
 
 if __name__ == "__main__":

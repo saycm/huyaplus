@@ -56,8 +56,8 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             (MODULE_DIR / "res/mipmap-xxxhdpi/ic_launcher.png").is_file(),
             "launcher icon is missing",
         )
-        self.assertIn('android:versionCode="21"', manifest)
-        self.assertIn('android:versionName="1.20"', manifest)
+        self.assertIn('android:versionCode="22"', manifest)
+        self.assertIn('android:versionName="1.21"', manifest)
         self.assertIn('android:name=".GlassDashboardActivity"', manifest)
         self.assertIn('android:name=".AppDetailActivity"', manifest)
         self.assertIn('android:theme="@style/GlassDashboard"', manifest)
@@ -130,11 +130,10 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             self.assertIn(f'@+id/switch_{switch}', detail_text)
         self.assertIn("AppDetailActivity.class", activity.read_text(encoding="utf-8"))
         activity_text = activity.read_text(encoding="utf-8")
-        self.assertIn("getApplicationInfo(packageName, 0)", activity_text)
-        self.assertIn('packageInstalled("com.duowan.kiwi")', activity_text)
         detail_activity_text = detail_activity.read_text(encoding="utf-8")
-        self.assertIn('packageInstalled("com.duowan.kiwi")', detail_activity_text)
-        self.assertIn("getApplicationInfo(packageName, 0)", detail_activity_text)
+        for screen in (activity_text, detail_activity_text):
+            self.assertIn("HuyaVersion.installed(this)", screen)
+            self.assertIn("HuyaVersion.supports(", screen)
         self.assertTrue(
             (
                 ROOT

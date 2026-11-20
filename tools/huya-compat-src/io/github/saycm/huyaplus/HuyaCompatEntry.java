@@ -1,8 +1,10 @@
 package io.github.saycm.huyaplus;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -10,9 +12,11 @@ import android.util.Pair;
 import android.view.View;
 import android.view.ViewParent;
 import android.widget.LinearLayout;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -24,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
@@ -31,7 +36,7 @@ import io.github.libxposed.api.XposedModule;
 
 public final class HuyaCompatEntry extends XposedModule {
     private static final String TAG = "FuckAD";
-    private static final String TARGET_PACKAGE = "com.duowan.kiwi";
+    private static final String TARGET_PACKAGE = HuyaVersion.PACKAGE_NAME;
     private static final String TARGET_CLASS =
             "com.huya.kiwi.hyext.impl.modules.internal.HyExtAd";
     private static final String AMS_HELPER_CLASS =
@@ -51,10 +56,12 @@ public final class HuyaCompatEntry extends XposedModule {
 
     private static Handler mainHandler;
     private final QualitySession qualitySession = new QualitySession();
+    private Toast qualityNotice;
     private final Map<Object, GlassSettings.NavigationEntry> navigationItems = new WeakHashMap<>();
     private final Map<View, Integer> hiddenNavigationViews = new WeakHashMap<>();
     private boolean hooksInitialized;
     private boolean activityLoaderHookInstalled;
+    private boolean activationChecked;
     private SharedPreferences prefs;
     private DailyAutomation dailyAutomation;
 
@@ -105,15 +112,24 @@ public final class HuyaCompatEntry extends XposedModule {
             Method onCreate = type.getDeclaredMethod("onCreate", android.os.Bundle.class);
             hook(onCreate).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object activity = chain.getThisObject();
-                ClassLoader activityLoader = activity == null
-                        ? null : activity.getClass().getClassLoader();
-                initializeHooks(activityLoader);
+                if (!activationChecked && activity instanceof Activity) {
+                    activationChecked = true;
+                    String version = HuyaVersion.installed((Activity) activity);
+                    if (!HuyaVersion.supports(version)) {
+                        logInfo("unsupported Huya version; requires " + HuyaVersion.SUPPORTED);
+                    } else if (isRootAuthorized((Activity) activity)) {
+                        logInfo("module Root verified");
+                        initializeHooks(activity.getClass().getClassLoader());
+                    } else {
+                        logInfo("module Root unavailable; features disabled");
+                    }
+                }
                 return chain.proceed();
             });
             Method onResume = type.getDeclaredMethod("onResume");
             hook(onResume).intercept(chain -> {
                 Object result = chain.proceed();
-                if (TARGET_PACKAGE.equals(android.app.Application.getProcessName())
+                if (hooksInitialized && TARGET_PACKAGE.equals(android.app.Application.getProcessName())
                         && chain.getThisObject() instanceof android.content.Context) {
                     android.content.Context context = (android.content.Context) chain.getThisObject();
                     if (dailyAutomation == null) {
@@ -128,6 +144,17 @@ public final class HuyaCompatEntry extends XposedModule {
             logInfo("hooked activity ClassLoader initialization");
         } catch (Throwable throwable) {
             logFailure(throwable);
+        }
+    }
+
+    private boolean isRootAuthorized(Activity activity) {
+        try {
+            Bundle reply = activity.getContentResolver().call(
+                    GlassSettings.MODULE_PROVIDER, GlassSettings.VERIFY_ROOT, null, null);
+            return reply != null && reply.getBoolean(GlassSettings.ROOT_GRANTED, false);
+        } catch (RuntimeException | LinkageError failure) {
+            logInfo("module Root verification service unavailable");
+            return false;
         }
     }
 
@@ -415,7 +442,8 @@ public final class HuyaCompatEntry extends XposedModule {
     }
 
     private boolean isEnabled(String key) {
-        return prefs == null || prefs.getBoolean(key, true);
+        boolean defaultValue = GlassSettings.defaultEnabled(key);
+        return prefs == null ? defaultValue : prefs.getBoolean(key, defaultValue);
     }
 
     private void hookDefaultQuality(ClassLoader classLoader) {
@@ -445,12 +473,12 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.liveroom.ChannelPage");
             hook(channelType.getDeclaredMethod("onCreate", android.os.Bundle.class))
                     .intercept(chain -> {
-                        qualitySession.enter();
+                        onQualityRoomEntered(chain.getThisObject(), classLoader);
                         return chain.proceed();
                     });
             hook(channelType.getDeclaredMethod("onNewIntent", android.content.Intent.class))
                     .intercept(chain -> {
-                        qualitySession.enter();
+                        onQualityRoomEntered(chain.getThisObject(), classLoader);
                         return chain.proceed();
                     });
             Class<?> lineDataType = classLoader.loadClass(
@@ -458,9 +486,9 @@ public final class HuyaCompatEntry extends XposedModule {
             Method setLineInfo = findMethod(lineDataType, "setMultiLineInfo", 3);
             if (setLineInfo != null) {
                 hook(setLineInfo).intercept(chain -> {
-                    Object result = chain.proceed();
                     int token = qualitySession.current();
-                    if (qualitySession.pending(token)) scheduleQualityApply(classLoader, token, 0);
+                    Object result = chain.proceed();
+                    scheduleQualityApply(classLoader, token);
                     return result;
                 });
             }
@@ -470,57 +498,116 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private void scheduleQualityApply(ClassLoader classLoader, int token, int attempt) {
+    private void scheduleQualityApply(ClassLoader classLoader, int token) {
         if (!qualitySession.queue(token)) return;
         getMainHandler().postDelayed(() -> {
-            qualitySession.dequeue(token);
-            if (!qualitySession.pending(token)) return;
-            if (!applyConfiguredQuality(classLoader, token) && attempt < 4) {
-                scheduleQualityApply(classLoader, token, attempt + 1);
+            boolean retry;
+            try {
+                retry = qualitySession.pending(token) && !applyConfiguredQuality(classLoader, token);
+            } finally {
+                qualitySession.dequeue(token);
             }
+            if (retry) scheduleQualityApply(classLoader, token);
         }, 1800L);
+    }
+
+    private void onQualityRoomEntered(Object activity, ClassLoader loader) {
+        int token = qualitySession.enter();
+        if (!(activity instanceof Activity)) return;
+        if (qualityNotice != null) {
+            qualityNotice.cancel();
+            qualityNotice = null;
+        }
+        WeakReference<Activity> room = new WeakReference<>((Activity) activity);
+        getMainHandler().postDelayed(() -> showRoomQuality(room, loader, token, 20), 2200L);
+    }
+
+    private void showRoomQuality(WeakReference<Activity> room, ClassLoader loader,
+                                 int token, int attemptsLeft) {
+        Activity activity = room.get();
+        if (!qualitySession.noticePending(token) || activity == null
+                || activity.isFinishing() || activity.isDestroyed()) return;
+        if (activity.hasWindowFocus() && qualitySession.noticeReady(token, qualityNoticeTime())) {
+            try {
+                String label = playingQualityLabel(loader);
+                if (!label.isEmpty() && qualitySession.claimNotice(token, qualityNoticeTime())) {
+                    qualityNotice = Toast.makeText(activity.getApplicationContext(),
+                            "当前画质：" + label, Toast.LENGTH_SHORT);
+                    qualityNotice.show();
+                    return;
+                }
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+                logFailure(failure);
+                return;
+            }
+        }
+        if (attemptsLeft > 1) {
+            getMainHandler().postDelayed(
+                    () -> showRoomQuality(room, loader, token, attemptsLeft - 1), 500L);
+        }
+    }
+
+    private String playingQualityLabel(ClassLoader loader) throws ReflectiveOperationException {
+        Class<?> moduleType = loader.loadClass("com.duowan.kiwi.live.api.multiline.IMultiLineModule");
+        Object module = getMultiLineModule(loader);
+        if (module == null || !Boolean.TRUE.equals(moduleType.getMethod("isInChannel").invoke(module))) {
+            return "";
+        }
+        long playId = ((Number) moduleType.getMethod("getPlayId").invoke(module)).longValue();
+        Class<?> componentType = loader.loadClass("com.duowan.kiwi.player.ILivePlayerComponent");
+        Object component = HuyaComponents.get(loader, componentType);
+        if (component == null) return "";
+        Object players = componentType.getMethod("getLivePlayerModule").invoke(component);
+        if (players == null) return "";
+        Class<?> playersType = loader.loadClass("com.duowan.kiwi.player.ILivePlayerModule");
+        Object player = playersType.getMethod("getMultiVideoPlayer", long.class).invoke(players, playId);
+        Class<?> playerType = loader.loadClass("com.duowan.kiwi.player.ILivePlayer");
+        if (player == null || !Boolean.TRUE.equals(playerType.getMethod("isVideoPlaying").invoke(player))) {
+            return "";
+        }
+        int bitrate = ((Number) playerType.getMethod("getCurrentBitrate").invoke(player)).intValue();
+        int lineIndex = ((Number) moduleType.getMethod("getLineIndex").invoke(module)).intValue();
+        Class<?> infoType = loader.loadClass("com.duowan.kiwi.live.model.MultiBitrateInfo");
+        Method getBitrate = infoType.getMethod("getBitrate");
+        Method getDisplayName = infoType.getMethod("getDisplayName");
+        Method getHevcBitrate = infoType.getMethod("getHEVCBitRate");
+        String hevcLabel = "";
+        String originalLabel = "";
+        for (Object item : currentLineBitrates(loader, moduleType, module, lineIndex)) {
+            if (!infoType.isInstance(item)) continue;
+            String label = text(getDisplayName.invoke(item)).trim();
+            if (label.isEmpty()) continue;
+            int tierBitrate = ((Number) getBitrate.invoke(item)).intValue();
+            if (tierBitrate == bitrate) return label;
+            if (tierBitrate == 0) originalLabel = label;
+            if (bitrate > 0 && ((Number) getHevcBitrate.invoke(item)).intValue() == bitrate) {
+                hevcLabel = label;
+            }
+        }
+        if (!hevcLabel.isEmpty()) return hevcLabel;
+        if (bitrate <= 0 || originalLabel.isEmpty()) return "";
+        int originalBitrate = ((Number) moduleType.getMethod("getOriginalBitrate", long.class)
+                .invoke(module, playId)).intValue();
+        return bitrate == originalBitrate ? originalLabel : "";
     }
 
     private boolean applyConfiguredQuality(ClassLoader classLoader, int token) {
         int preferred = prefs == null ? LiveQuality.FOLLOW
                 : prefs.getInt(GlassSettings.KEY_LIVE_QUALITY, LiveQuality.FOLLOW);
-        if (preferred == LiveQuality.FOLLOW || !qualitySession.pending(token)) return true;
+        if (preferred == LiveQuality.FOLLOW || !qualitySession.beginAttempt(token)) return true;
         try {
-            Class<?> componentType = classLoader.loadClass(
-                    "com.duowan.kiwi.live.api.ILiveComponent");
-            Object component = classLoader.loadClass("ryxq.xxe")
-                    .getDeclaredMethod("i", Class.class).invoke(null, componentType);
-            Object module = componentType.getMethod("getMultiLineModule").invoke(component);
+            Object module = getMultiLineModule(classLoader);
             if (module == null) return false;
             Class<?> moduleType = classLoader.loadClass(
                     "com.duowan.kiwi.live.api.multiline.IMultiLineModule");
             int lineIndex = ((Number) moduleType.getMethod("getLineIndex")
                     .invoke(module)).intValue();
-            Object raw = moduleType.getMethod("getLines").invoke(module);
-            if (!(raw instanceof android.util.Pair)) return false;
-            android.util.Pair<?, ?> pair = (android.util.Pair<?, ?>) raw;
-            Class<?> lineType = classLoader.loadClass("com.duowan.kiwi.live.model.ABSLine");
-            Object currentLine = null;
-            for (Object group : new Object[]{pair.first, pair.second}) {
-                if (!(group instanceof List)) continue;
-                for (Object line : (List<?>) group) {
-                    if (lineType.isInstance(line) && ((Number) lineType.getMethod("getLineIndex")
-                            .invoke(line)).intValue() == lineIndex) {
-                        currentLine = line;
-                        break;
-                    }
-                }
-                if (currentLine != null) break;
-            }
-            if (currentLine == null) return false;
-            Object rawRates = lineType.getMethod("getBitrateInfoList").invoke(currentLine);
-            if (!(rawRates instanceof List)) return false;
             Class<?> infoType = classLoader.loadClass(
                     "com.duowan.kiwi.live.model.MultiBitrateInfo");
             Method getBitrate = infoType.getMethod("getBitrate");
             Method getDisplayName = infoType.getMethod("getDisplayName");
             Map<Integer, String> rates = new LinkedHashMap<>();
-            for (Object item : (List<?>) rawRates) {
+            for (Object item : currentLineBitrates(classLoader, moduleType, module, lineIndex)) {
                 if (!infoType.isInstance(item)) continue;
                 Object bitrate = getBitrate.invoke(item);
                 Object name = getDisplayName.invoke(item);
@@ -529,14 +616,13 @@ public final class HuyaCompatEntry extends XposedModule {
             }
             if (rates.isEmpty()) return false;
             int selected = LiveQuality.select(preferred, -1, rates);
-            if (selected < 0) {
-                qualitySession.claim(token);
-                logInfo("default quality unavailable on current line");
-                return true;
-            }
-            if (!qualitySession.claim(token)) return true;
-            moduleType.getMethod("switchLineTo", int.class, int.class, boolean.class)
-                    .invoke(module, lineIndex, selected, true);
+            if (selected < 0) return false;
+            Method switchLine = moduleType.getMethod(
+                    "switchLineTo", int.class, int.class, boolean.class);
+            if (!qualitySession.pending(token)) return true;
+            switchLine.invoke(module, lineIndex, selected, true);
+            qualitySession.claim(token);
+            qualitySession.deferNotice(token, qualityNoticeTime() + 1000L);
             logInfo("requested default quality once line=" + lineIndex
                     + " selected=" + selected + " available=" + rates);
             return true;
@@ -544,6 +630,36 @@ public final class HuyaCompatEntry extends XposedModule {
             logFailure(throwable);
             return false;
         }
+    }
+
+    private Object getMultiLineModule(ClassLoader loader) throws ReflectiveOperationException {
+        Class<?> componentType = loader.loadClass("com.duowan.kiwi.live.api.ILiveComponent");
+        Object component = HuyaComponents.get(loader, componentType);
+        return component == null ? null : componentType.getMethod("getMultiLineModule").invoke(component);
+    }
+
+    private static long qualityNoticeTime() {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+    }
+
+    private static List<?> currentLineBitrates(ClassLoader loader, Class<?> moduleType,
+                                               Object module, int lineIndex)
+            throws ReflectiveOperationException {
+        Object raw = moduleType.getMethod("getLines").invoke(module);
+        if (!(raw instanceof Pair)) return Collections.emptyList();
+        Pair<?, ?> lines = (Pair<?, ?>) raw;
+        Class<?> lineType = loader.loadClass("com.duowan.kiwi.live.model.ABSLine");
+        Method getLineIndex = lineType.getMethod("getLineIndex");
+        for (Object group : new Object[]{lines.first, lines.second}) {
+            if (!(group instanceof List)) continue;
+            for (Object line : (List<?>) group) {
+                if (lineType.isInstance(line) && ((Number) getLineIndex.invoke(line)).intValue() == lineIndex) {
+                    Object rates = lineType.getMethod("getBitrateInfoList").invoke(line);
+                    return rates instanceof List ? (List<?>) rates : Collections.emptyList();
+                }
+            }
+        }
+        return Collections.emptyList();
     }
 
     private void hookVipAdFilter(ClassLoader classLoader) {
@@ -1107,12 +1223,19 @@ public final class HuyaCompatEntry extends XposedModule {
 
     private void hookStartupGuide(ClassLoader classLoader) {
         try {
-            Class<?> type = classLoader.loadClass("ryxq.weg");
-            // Preserve initialization and the original dialog-close event path.
-            hook(type.getDeclaredMethod("shouldShowGuideDialog", boolean.class))
-                    .intercept(chain -> chain.proceed(new Object[]{false}));
-            hook(type.getDeclaredMethod("shouldShowGuideDialog"))
-                    .intercept(chain -> false);
+            Method setVisibility;
+            Method shouldShow;
+            try {
+                Class<?> type = classLoader.loadClass("ryxq.weg");
+                setVisibility = type.getDeclaredMethod("shouldShowGuideDialog", boolean.class);
+                shouldShow = type.getDeclaredMethod("shouldShowGuideDialog");
+            } catch (ClassNotFoundException | NoSuchMethodException oldGuideAbsent) {
+                Class<?> type = classLoader.loadClass("ryxq.izb");
+                setVisibility = type.getDeclaredMethod("shouldShowGuideDialog", boolean.class);
+                shouldShow = type.getDeclaredMethod("shouldShowGuideDialog");
+            }
+            hook(setVisibility).intercept(chain -> chain.proceed(new Object[]{false}));
+            hook(shouldShow).intercept(chain -> false);
             logInfo("hooked startup guide display");
         } catch (Throwable failure) {
             logFailure(failure);
