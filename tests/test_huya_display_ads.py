@@ -10,6 +10,44 @@ from test_huya_loader_lifecycle import JDK, ROOT, SDK, SOURCES
 
 DISPLAY_SOURCES = dict(SOURCES)
 DISPLAY_SOURCES.update({
+    "com/duowan/kiwi/livead/api/adbanner/view/AdLiveBannerView.java": """
+package com.duowan.kiwi.livead.api.adbanner.view;
+import java.util.*;
+public class AdLiveBannerView {
+ public boolean visible=true;
+ public int shows, hides;
+ public boolean showAd(List<?> ads,Map<?,?> extras){shows++;visible=true;return true;}
+ public void hideAd(){hides++;visible=false;}
+}
+""",
+    "com/duowan/HUYA/LiveRoomAdvertise.java": """
+package com.duowan.HUYA;
+public class LiveRoomAdvertise {}
+""",
+    "com/duowan/kiwi/livead/api/adfloat/data/Advertisement.java": """
+package com.duowan.kiwi.livead.api.adfloat.data;
+public class Advertisement {}
+""",
+    "com/duowan/kiwi/livead/impl/adfloat/module/RevenueModule.java": """
+package com.duowan.kiwi.livead.impl.adfloat.module;
+import java.util.Map;
+import com.duowan.HUYA.LiveRoomAdvertise;
+import com.duowan.kiwi.livead.api.adfloat.data.Advertisement;
+public class RevenueModule {
+ public int displays;
+ private void displayAdByMethod(LiveRoomAdvertise ad,Advertisement data,long time,Map<?,?> extras){
+  displays++;
+ }
+}
+""",
+    "com/duowan/kiwi/universal/live/pubscreen/biz/UniversalLiveAdFloat.java": """
+package com.duowan.kiwi.universal.live.pubscreen.biz;
+public class UniversalLiveAdFloat {
+ public boolean visible;
+ public int updates;
+ private void changeFloatAdVisibilityIfNeed(boolean visible){updates++;this.visible=visible;}
+}
+""",
     "com/duowan/kiwi/universal/live/activitybar/banner/UniversalLiveBannerView.java": """
 package com.duowan.kiwi.universal.live.activitybar.banner;
 import java.util.*;
@@ -212,16 +250,54 @@ public class ImmerseItem {
 package com.duowan.kiwi.immersepage.impl.data;
 import java.util.*;
 import com.duowan.kiwi.immersepage.api.data.ImmerseItem;
-public class ImmerseDataManagerImpl {
+public class ImmerseDataManagerImpl implements IImmerseDataManager {
+ public final List<ImmerseItem> items=new ArrayList<>();
  private ArrayList filterList(int pageIndex,ArrayList items,boolean fromRefresh){
   return new ArrayList(items);
  }
+ public void insertAdIfNeed(int position,ArrayList<ImmerseItem> ads,List<?> localAds,
+                            InertItemCallback callback){
+  if(ads.isEmpty())return;
+  items.addAll(position,ads);
+  callback.result(null);
+ }
+}
+""",
+    "com/duowan/kiwi/immersepage/impl/data/IImmerseDataManager.java": """
+package com.duowan.kiwi.immersepage.impl.data;
+import java.util.ArrayList;
+public interface IImmerseDataManager {
+ interface InertItemCallback { void result(ArrayList<?> items); }
+}
+""",
+    "com/duowan/HUYA/UserRecItem.java": """
+package com.duowan.HUYA;
+import java.util.ArrayList;
+public class UserRecItem {
+ public final Card tMCard=new Card();
+ public static class Card { public final ArrayList<Object> vAdCard=new ArrayList<>(); }
+}
+""",
+    "com/duowan/kiwi/universalslide/impl/adapter/UniversalSlideAdapter.java": """
+package com.duowan.kiwi.universalslide.impl.adapter;
+import java.util.ArrayList;
+import java.util.List;
+public class UniversalSlideAdapter {
+ private List<?> filterSupportedItems(List<?> items){ return new ArrayList<>(items); }
 }
 """,
     "DisplayAdsTest.java": """
 import java.util.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
+import android.content.SharedPreferences;
 import io.github.libxposed.api.XposedModule;
 import io.github.saycm.huyaplus.HuyaCompatEntry;
+import com.duowan.HUYA.LiveRoomAdvertise;
+import com.duowan.kiwi.livead.api.adbanner.view.AdLiveBannerView;
+import com.duowan.kiwi.livead.api.adfloat.data.Advertisement;
+import com.duowan.kiwi.livead.impl.adfloat.module.RevenueModule;
+import com.duowan.kiwi.universal.live.pubscreen.biz.UniversalLiveAdFloat;
 import com.duowan.kiwi.adsplash.controller.AdRouter;
 import com.duowan.kiwi.ad.impl.HyAdModule;
 import com.duowan.kiwi.list.patface.chain.PatFaceInterceptorChain;
@@ -230,7 +306,10 @@ import com.duowan.kiwi.list.component.RecommendAdComponent;
 import com.duowan.kiwi.list.homepage.tab.recommend.BaseRecommendPresenter;
 import com.duowan.kiwi.immersepage.api.data.ImmerseItem;
 import com.duowan.kiwi.immersepage.api.data.ImmerseItemType;
+import com.duowan.kiwi.immersepage.impl.data.IImmerseDataManager.InertItemCallback;
 import com.duowan.kiwi.immersepage.impl.data.ImmerseDataManagerImpl;
+import com.duowan.kiwi.universalslide.impl.adapter.UniversalSlideAdapter;
+import com.duowan.HUYA.UserRecItem;
 import com.duowan.kiwi.popup.api.PopupItem;
 import com.duowan.kiwi.popup.impl.PopupModule;
 import com.duowan.kiwi.livead.impl.adplugin.module.HYRoomPopupPlugin;
@@ -295,12 +374,47 @@ public class DisplayAdsTest {
   public Object proceed(Object[] args){return null;}
  }
  public static void main(String[] args) throws Throwable {
-  new HuyaCompatEntry().onPackageReady(
-   new Param(DisplayAdsTest.class.getClassLoader()));
+  HuyaCompatEntry entry=new HuyaCompatEntry();
+  ClassLoader loader=DisplayAdsTest.class.getClassLoader();
+  entry.onPackageReady(new Param(loader));
+  if(args[0].equals("native-live-ads")&&args.length==3){
+   Map<String,Boolean> settings=Map.of("live_ad_banner",Boolean.valueOf(args[1]),
+     "live_ad_float",Boolean.valueOf(args[2]),"ads",false,"live_cards",false);
+   Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+   prefs.setAccessible(true);
+   prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
+    (proxy,method,values)->settings.getOrDefault(values[0],(Boolean)values[1])));
+  }
+  if(args[0].equals("immerse-insert")){
+   Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+   prefs.setAccessible(true);
+   prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
+    (proxy,method,values)->"ads".equals(values[0])?Boolean.valueOf(args[1]):values[1]));
+  }
   XposedModule.invokeHook(
    android.app.Activity.class.getDeclaredMethod("onCreate",android.os.Bundle.class),
    new ActivityChain(new android.app.Activity()));
-  if(args[0].equals("live-cards")){
+  if(args[0].equals("native-live-ads")){
+   boolean filterBanner=args.length==3&&Boolean.parseBoolean(args[1]);
+   boolean filterFloat=args.length==3&&Boolean.parseBoolean(args[2]);
+   AdLiveBannerView banner=new AdLiveBannerView();
+   Object shown=call(banner,"showAd",new Class<?>[]{List.class,Map.class},List.of("ad"),Map.of());
+   check(Boolean.valueOf(!filterBanner).equals(shown),"Banner must respect its own switch");
+   check(banner.visible!=filterBanner,"Filtering must collapse the existing banner");
+   check(banner.shows==(filterBanner?0:1)&&banner.hides==(filterBanner?1:0),
+    "Use exactly one host action to show or hide the banner");
+
+   RevenueModule revenue=new RevenueModule();
+   call(revenue,"displayAdByMethod",
+    new Class<?>[]{LiveRoomAdvertise.class,Advertisement.class,long.class,Map.class},
+    new LiveRoomAdvertise(),new Advertisement(),0L,Map.of());
+   check(revenue.displays==(filterFloat?0:1),"Float must respect its own switch");
+   UniversalLiveAdFloat overlay=new UniversalLiveAdFloat();
+   call(overlay,"changeFloatAdVisibilityIfNeed",new Class<?>[]{boolean.class},true);
+   check(overlay.visible!=filterFloat,"Float layout must use the effective visibility");
+   call(overlay,"changeFloatAdVisibilityIfNeed",new Class<?>[]{boolean.class},false);
+   check(!overlay.visible&&overlay.updates==2,"Float layout must still process visibility changes");
+  }else if(args[0].equals("live-cards")){
    PopupModule module=new PopupModule();
    for(String key:new String[]{"magicboxrecentresult_autotrigger",
      "giftblindbox_autotrigger","adrewardtasks_autotrigger","gamepad_autotrigger",
@@ -473,6 +587,31 @@ public class DisplayAdsTest {
    check(result.equals(Arrays.asList(normal,recommendLive)),
     "Immersive feed ads must be removed while normal items keep their order: "+result.size());
    check(input.size()==6,"Caller-owned feed data must stay unchanged");
+  }else if(args[0].equals("immerse-insert")){
+   boolean blockAds=Boolean.parseBoolean(args[1]);
+   ImmerseItem first=new ImmerseItem(ImmerseItemType.RECOMMEND_SINGLE_IMMERSION_LIVE);
+   ImmerseItem next=new ImmerseItem(ImmerseItemType.RECOMMEND_SINGLE_IMMERSION_LIVE);
+   ImmerseItem ad=new ImmerseItem(ImmerseItemType.HOT_LIVE_AD_VIDEO);
+   ImmerseDataManagerImpl manager=new ImmerseDataManagerImpl();
+   manager.items.addAll(List.of(first,next));
+   int[] callbacks={0};
+   call(manager,"insertAdIfNeed",
+    new Class<?>[]{int.class,ArrayList.class,List.class,InertItemCallback.class},
+    1,new ArrayList<>(List.of(ad)),List.of(),
+    (InertItemCallback) ignored->callbacks[0]++);
+   check(manager.items.equals(blockAds?List.of(first,next):List.of(first,ad,next)),
+    "Ad insertion must follow the switch and preserve the live room order");
+   check(callbacks[0]==(blockAds?0:1),"Only actual insertion should notify the adapter");
+  }else if(args[0].equals("immerse-adapter")){
+   UserRecItem first=new UserRecItem(), commercial=new UserRecItem();
+   commercial.tMCard.vAdCard.add(new Object());
+   ImmerseItem ordinary=new ImmerseItem(ImmerseItemType.VIDEO);
+   ImmerseItem ad=new ImmerseItem(ImmerseItemType.LIVE_LIST_AD_VIDEO);
+   UniversalSlideAdapter adapter=new UniversalSlideAdapter();
+   List<?> input=List.of(first,commercial,ad,ordinary);
+   List<?> result=(List<?>)call(adapter,"filterSupportedItems",new Class<?>[]{List.class},input);
+   check(result.equals(List.of(first,ordinary)),
+    "Neither live list ads nor immersive video ads should become swipe pages");
   }else if(args[0].equals("batch")){
    Object adapter=Class.forName(args[1]).getConstructor().newInstance();
    LineItem first=new LineItem(new Object()),last=new LineItem(new Object());
@@ -581,6 +720,12 @@ class HuyaDisplayAdsTest(unittest.TestCase):
     def test_live_floating_ads_stop_before_native_queue_without_removing_reward_entries(self):
         self.run_case("live-floating-ads")
 
+    def test_native_banner_and_float_filters_are_independent_and_opt_in(self):
+        for switches in ((), ("false", "false"), ("true", "false"),
+                         ("false", "true"), ("true", "true")):
+            with self.subTest(switches=switches):
+                self.run_case("native-live-ads", *switches)
+
     def test_automatic_placeholder_cards_cannot_bypass_the_popup_filter(self):
         self.run_case("live-placeholder-cards")
 
@@ -607,6 +752,14 @@ class HuyaDisplayAdsTest(unittest.TestCase):
 
     def test_recommendation_feed_removes_all_immersive_ad_item_types(self):
         self.run_case("immerse")
+
+    def test_swipe_ad_insertion_respects_the_ad_filter_switch(self):
+        for enabled in ("false", "true"):
+            with self.subTest(enabled=enabled):
+                self.run_case("immerse-insert", enabled)
+
+    def test_swipe_feed_keeps_only_normal_items_from_both_data_formats(self):
+        self.run_case("immerse-adapter")
 
     def test_both_list_adapters_filter_ads_without_changing_the_input(self):
         for adapter, methods in (

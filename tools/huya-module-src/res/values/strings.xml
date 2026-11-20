@@ -35,6 +35,10 @@
     <string name="feature_ads_desc">过滤开屏、推荐页和沉浸页广告</string>
     <string name="feature_live_cards">直播间推广卡片</string>
     <string name="feature_live_cards_desc">横幅、浮窗和公屏弹窗</string>
+    <string name="feature_live_ad_banner">屏蔽直播间广告横幅</string>
+    <string name="feature_live_ad_banner_desc">收起直播间底部的原生广告横幅</string>
+    <string name="feature_live_ad_float">屏蔽直播间广告浮层</string>
+    <string name="feature_live_ad_float_desc">隐藏公屏旁边的悬浮广告和原生推广层</string>
     <string name="feature_rewards">奖励广告直接完成</string>
     <string name="feature_rewards_desc">点击领取后跳过广告视频直接发放</string>
     <string name="feature_vip_ads">会员免直播广告</string>

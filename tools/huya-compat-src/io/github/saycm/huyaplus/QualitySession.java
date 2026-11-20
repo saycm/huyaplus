@@ -8,8 +8,26 @@ final class QualitySession {
     private boolean queued;
     private boolean noticeShown;
     private long noticeAfter;
+    private long room;
 
     synchronized int enter() {
+        return reset(0L);
+    }
+
+    synchronized int enterRoom(long roomId) {
+        return roomId <= 0L || roomId == room ? 0 : reset(roomId);
+    }
+
+    synchronized long roomId(int token) {
+        return token == generation ? room : -1L;
+    }
+
+    synchronized boolean matchesRoom(int token, long playId) {
+        return token == generation && (room == 0L || playId == room);
+    }
+
+    private int reset(long roomId) {
+        room = roomId;
         attempts = 0;
         finished = false;
         queued = false;

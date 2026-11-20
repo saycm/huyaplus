@@ -54,6 +54,18 @@ public class QualitySessionTest {
   session.deferNotice(fifth, 4000L);
   if (session.claimNotice(fifth, 3999L) || !session.claimNotice(fifth, 4000L))
    throw new AssertionError("the notice must allow a requested switch to settle");
+
+  int swipe = session.enterRoom(101L);
+  if (session.roomId(swipe) != 101L || !session.pending(swipe) || session.matchesRoom(swipe, 100L)
+    || !session.matchesRoom(swipe, 101L))
+   throw new AssertionError("only the selected room's player may receive the new quality");
+  session.manualSelection();
+  if (session.enterRoom(101L) != 0 || session.pending(swipe))
+   throw new AssertionError("a duplicate selection must preserve the manual setting");
+  int next = session.enterRoom(102L);
+  if (session.roomId(swipe) != -1L || session.matchesRoom(swipe, 101L) || !session.pending(next)
+    || !session.matchesRoom(next, 102L))
+   throw new AssertionError("swiping to a new room must cancel stale callbacks and re-enable auto quality");
  }
 }""", encoding="utf-8")
             jdk = Path(os.environ["JAVA_HOME"]) / "bin"

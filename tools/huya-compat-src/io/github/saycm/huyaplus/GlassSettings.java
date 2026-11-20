@@ -9,6 +9,8 @@ public final class GlassSettings {
     static final String ROOT_GRANTED = "root_granted";
     public static final String KEY_ADS = "ads";
     public static final String KEY_LIVE_CARDS = "live_cards";
+    public static final String KEY_LIVE_AD_BANNER = "live_ad_banner";
+    public static final String KEY_LIVE_AD_FLOAT = "live_ad_float";
     public static final String KEY_REWARDS = "rewards";
     public static final String KEY_VIP_ADS = "vip_ads";
     public static final String KEY_VIP_4K = "vip_4k";
@@ -25,7 +27,9 @@ public final class GlassSettings {
     public static final String KEY_TASK_ENABLED_PREFIX = "task_enabled_v1/";
 
     static boolean defaultEnabled(String key) {
-        return !KEY_VIP_4K.equals(key);
+        return !KEY_VIP_4K.equals(key)
+                && !KEY_LIVE_AD_BANNER.equals(key)
+                && !KEY_LIVE_AD_FLOAT.equals(key);
     }
 
     enum NavigationEntry {

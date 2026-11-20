@@ -492,8 +492,12 @@ public class DefaultQualityHookTest {
  }
  public static class MultiLineModule {
   int failures,requests,selected;
-  public boolean isInChannel(){return true;}
-  public long getPlayId(){return 17;}
+  boolean inChannel=true,validLine=true;
+  long playId=17,prePlayerId;
+  public boolean isInChannel(){return inChannel;}
+  public boolean hasValidLine(){return validLine;}
+  public long getPlayId(){return playId;}
+  public long getPrePlayerId(){return prePlayerId;}
     public int getOriginalBitrate(long playId){return playId==17?3000:0;}
   public int getLineIndex(){return 1;}
   public Pair<List<Line>,List<Line>> getLines(){return new Pair<>(List.of(line),List.of());}
@@ -504,7 +508,13 @@ public class DefaultQualityHookTest {
   }
  }
  public static class LiveComponent {
-  public MultiLineModule getMultiLineModule(){return module;}
+  static boolean registered=true;
+  public MultiLineModule getMultiLineModule(){
+   throw new AssertionError("Quality lookup must not create a line module");
+  }
+  public MultiLineModule tryGetMultiLineModule(long roomId){
+   return registered&&(roomId==0||roomId==17)?module:null;
+  }
  }
  public static class PlayerComponent {
   public PlayerModule getLivePlayerModule(){return new PlayerModule();}
@@ -622,6 +632,34 @@ public class DefaultQualityHookTest {
     }
   XposedModule.call(page,"onCreate",new Class<?>[]{Bundle.class},(Object)null);
   switch(args[0]){
+   case "swipe-ready" -> {
+    Field sessionField=HuyaCompatEntry.class.getDeclaredField("qualitySession");
+    sessionField.setAccessible(true);
+    Object session=sessionField.get(entry);
+    Method enterRoom=session.getClass().getDeclaredMethod("enterRoom",long.class);
+    enterRoom.setAccessible(true);
+    enterRoom.invoke(session,17L);
+    LiveComponent.registered=false;
+    module.inChannel=false;
+    module.validLine=false;
+    update(target,null);
+    dispatch();
+    check(module.requests==0,"Do not switch before Huya registers the room");
+    LiveComponent.registered=true;
+    dispatch();
+    check(module.requests==0,"Do not switch before entering the channel");
+    module.inChannel=true;
+    dispatch();
+    check(module.requests==0,"Do not switch when the room has no valid line");
+    module.validLine=true;
+    module.playId=0;
+    module.prePlayerId=18;
+    dispatch();
+    check(module.requests==0,"Do not switch the previous room's default player");
+    module.prePlayerId=17;
+    dispatch();
+    check(module.requests==1&&module.selected==2000,"Switch once after Huya promotes the current room");
+   }
    case "retry" -> {
     update(List.of(),null);
     dispatch();
@@ -817,7 +855,7 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             quality_cases = [(case,) for case in (
                 "retry", "switch-error", "bounded", "stale", "manual", "follow",
-                "notice", "notice-original")]
+                "notice", "notice-original", "swipe-ready")]
             quality_cases += [("retry", "13.5.62"), ("notice-original", "13.5.62")]
             for case in quality_cases:
                 with self.subTest(quality=case):

@@ -189,6 +189,12 @@ public final class HuyaCompatEntry extends XposedModule {
         if (liveCards) {
             hookLiveRoomCards(classLoader);
         }
+        if (isEnabled(GlassSettings.KEY_LIVE_AD_BANNER)) {
+            hookNativeLiveAdBanner(classLoader);
+        }
+        if (isEnabled(GlassSettings.KEY_LIVE_AD_FLOAT)) {
+            hookNativeLiveAdFloat(classLoader);
+        }
         if (vipAds) {
             hookVipAdFilter(classLoader);
         }
@@ -493,9 +499,41 @@ public final class HuyaCompatEntry extends XposedModule {
                 });
             }
             logInfo("hooked default live quality");
+            hookSwipeRoomQuality(classLoader, channelType);
         } catch (Throwable throwable) {
             logFailure(throwable);
         }
+    }
+
+    private void hookSwipeRoomQuality(ClassLoader loader, Class<?> channelType)
+            throws ReflectiveOperationException {
+        String livePackage = "com.duowan.kiwi.universal.item.live.";
+        Class<?> binder = loader.loadClass(livePackage + "UniversalRoomItemViewBinder");
+        Class<?> holder = loader.loadClass(livePackage + "UniversalRoomItemViewHolder");
+        Class<?> item = loader.loadClass("com.duowan.HUYA.UserRecItem");
+        Method enter = binder.getDeclaredMethod("onPageEnter", int.class, holder, item, boolean.class);
+        hook(enter).intercept(chain -> {
+            try {
+                Object reference = field(chain.getThisObject(), "fragment");
+                Object fragment = reference instanceof WeakReference
+                        ? ((WeakReference<?>) reference).get() : null;
+                Object activity = fragment == null ? null
+                        : fragment.getClass().getMethod("getActivity").invoke(fragment);
+                Object uid = field(chain.getArg(2), "lUid");
+                if (channelType.isInstance(activity) && uid instanceof Number) {
+                    int token = qualitySession.enterRoom(((Number) uid).longValue());
+                    if (token != 0) {
+                        scheduleRoomQualityNotice((Activity) activity, loader, token);
+                        scheduleQualityApply(loader, token);
+                        logInfo("started quality session for selected live room");
+                    }
+                }
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+                logFailure(failure);
+            }
+            return chain.proceed();
+        });
+        logInfo("hooked swipe room quality");
     }
 
     private void scheduleQualityApply(ClassLoader classLoader, int token) {
@@ -513,12 +551,17 @@ public final class HuyaCompatEntry extends XposedModule {
 
     private void onQualityRoomEntered(Object activity, ClassLoader loader) {
         int token = qualitySession.enter();
-        if (!(activity instanceof Activity)) return;
+        if (activity instanceof Activity) {
+            scheduleRoomQualityNotice((Activity) activity, loader, token);
+        }
+    }
+
+    private void scheduleRoomQualityNotice(Activity activity, ClassLoader loader, int token) {
         if (qualityNotice != null) {
             qualityNotice.cancel();
             qualityNotice = null;
         }
-        WeakReference<Activity> room = new WeakReference<>((Activity) activity);
+        WeakReference<Activity> room = new WeakReference<>(activity);
         getMainHandler().postDelayed(() -> showRoomQuality(room, loader, token, 20), 2200L);
     }
 
@@ -529,7 +572,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 || activity.isFinishing() || activity.isDestroyed()) return;
         if (activity.hasWindowFocus() && qualitySession.noticeReady(token, qualityNoticeTime())) {
             try {
-                String label = playingQualityLabel(loader);
+                String label = playingQualityLabel(loader, token);
                 if (!label.isEmpty() && qualitySession.claimNotice(token, qualityNoticeTime())) {
                     qualityNotice = Toast.makeText(activity.getApplicationContext(),
                             "当前画质：" + label, Toast.LENGTH_SHORT);
@@ -547,9 +590,10 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private String playingQualityLabel(ClassLoader loader) throws ReflectiveOperationException {
+    private String playingQualityLabel(ClassLoader loader, int token)
+            throws ReflectiveOperationException {
         Class<?> moduleType = loader.loadClass("com.duowan.kiwi.live.api.multiline.IMultiLineModule");
-        Object module = getMultiLineModule(loader);
+        Object module = findMultiLineModule(loader, moduleType, token);
         if (module == null || !Boolean.TRUE.equals(moduleType.getMethod("isInChannel").invoke(module))) {
             return "";
         }
@@ -596,10 +640,14 @@ public final class HuyaCompatEntry extends XposedModule {
                 : prefs.getInt(GlassSettings.KEY_LIVE_QUALITY, LiveQuality.FOLLOW);
         if (preferred == LiveQuality.FOLLOW || !qualitySession.beginAttempt(token)) return true;
         try {
-            Object module = getMultiLineModule(classLoader);
-            if (module == null) return false;
             Class<?> moduleType = classLoader.loadClass(
                     "com.duowan.kiwi.live.api.multiline.IMultiLineModule");
+            Object module = findMultiLineModule(classLoader, moduleType, token);
+            if (module == null
+                    || !Boolean.TRUE.equals(moduleType.getMethod("isInChannel").invoke(module))
+                    || !Boolean.TRUE.equals(moduleType.getMethod("hasValidLine").invoke(module))) {
+                return false;
+            }
             int lineIndex = ((Number) moduleType.getMethod("getLineIndex")
                     .invoke(module)).intValue();
             Class<?> infoType = classLoader.loadClass(
@@ -632,10 +680,23 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private Object getMultiLineModule(ClassLoader loader) throws ReflectiveOperationException {
+    private Object findMultiLineModule(ClassLoader loader, Class<?> moduleType, int token)
+            throws ReflectiveOperationException {
+        long roomId = qualitySession.roomId(token);
+        if (roomId < 0L) return null;
         Class<?> componentType = loader.loadClass("com.duowan.kiwi.live.api.ILiveComponent");
         Object component = HuyaComponents.get(loader, componentType);
-        return component == null ? null : componentType.getMethod("getMultiLineModule").invoke(component);
+        if (component == null) return null;
+        // Creating a room entry here can mask the active line module during Huya's auto-slide check.
+        Object module = componentType.getMethod("tryGetMultiLineModule", long.class)
+                .invoke(component, roomId);
+        if (module == null) return null;
+        long playId = ((Number) moduleType.getMethod("getPlayId").invoke(module)).longValue();
+        if (qualitySession.matchesRoom(token, playId)) return module;
+        if (playId != 0L) return null;
+        // Huya promotes the active player to slot 0 and retains its room ID as the previous ID.
+        long previousId = ((Number) moduleType.getMethod("getPrePlayerId").invoke(module)).longValue();
+        return qualitySession.matchesRoom(token, previousId) ? module : null;
     }
 
     private static long qualityNoticeTime() {
@@ -708,25 +769,31 @@ public final class HuyaCompatEntry extends XposedModule {
                 return;
             }
             hook(filterList).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-                Object result = chain.proceed();
-                if (!(result instanceof List)) {
-                    return result;
-                }
-                List<?> original = (List<?>) result;
-                List<Object> filtered = new ArrayList<>(original.size());
-                for (Object item : original) {
-                    if (!isImmerseAdItem(item)) {
-                        filtered.add(item);
-                    }
-                }
-                int removed = original.size() - filtered.size();
-                if (removed > 0) {
-                    logInfo("filtered " + removed + " immersive feed ads");
-                    return filtered;
-                }
-                return result;
+                return filterImmerseAds(chain.proceed(), "immersive feed");
             });
             logInfo("hooked immersive recommendation feed ads");
+
+            Class<?> callback = classLoader.loadClass(
+                    "com.duowan.kiwi.immersepage.impl.data.IImmerseDataManager$InertItemCallback");
+            Method insertAd = type.getDeclaredMethod(
+                    "insertAdIfNeed", int.class, ArrayList.class, List.class, callback);
+            hook(insertAd).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                if (((List<?>) chain.getArg(1)).isEmpty()) return chain.proceed();
+                // Huya leaves the list and its callback untouched when there is no ad to insert.
+                logInfo("blocked immersive swipe ad insertion");
+                return null;
+            });
+            logInfo("hooked immersive swipe ad insertion");
+        } catch (Throwable throwable) {
+            logFailure(throwable);
+        }
+        try {
+            Class<?> adapter = classLoader.loadClass(
+                    "com.duowan.kiwi.universalslide.impl.adapter.UniversalSlideAdapter");
+            Method filter = adapter.getDeclaredMethod("filterSupportedItems", List.class);
+            hook(filter).setPriority(PRIORITY_HIGHEST).intercept(chain ->
+                    filterImmerseAds(chain.proceed(), "swipe list"));
+            logInfo("hooked swipe list ad filter");
         } catch (Throwable throwable) {
             logFailure(throwable);
         }
@@ -761,9 +828,26 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
+    private Object filterImmerseAds(Object result, String source) {
+        if (!(result instanceof List)) return result;
+        List<?> original = (List<?>) result;
+        List<Object> filtered = new ArrayList<>(original.size());
+        for (Object item : original) {
+            if (!isImmerseAdItem(item)) filtered.add(item);
+        }
+        int removed = original.size() - filtered.size();
+        if (removed == 0) return result;
+        logInfo("filtered " + removed + " ads from " + source);
+        return filtered;
+    }
+
     private static boolean isImmerseAdItem(Object item) {
         if (item == null) {
             return false;
+        }
+        if ("com.duowan.HUYA.UserRecItem".equals(item.getClass().getName())) {
+            Object ads = field(field(item, "tMCard"), "vAdCard");
+            return ads instanceof List && !((List<?>) ads).isEmpty();
         }
         try {
             Object itemType = item.getClass().getMethod("getItemType").invoke(item);
@@ -856,6 +940,52 @@ public final class HuyaCompatEntry extends XposedModule {
             }
         } catch (Throwable throwable) {
             logFailure(throwable);
+        }
+    }
+
+    private void hookNativeLiveAdBanner(ClassLoader loader) {
+        try {
+            Class<?> type = loader.loadClass("com.duowan.kiwi.livead.api.adbanner.view.AdLiveBannerView");
+            Method show = type.getDeclaredMethod("showAd", List.class, Map.class);
+            Method hide = type.getMethod("hideAd");
+            hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                hide.invoke(chain.getThisObject());
+                logInfo("blocked native live-room banner");
+                return false;
+            });
+            logInfo("hooked native live-room banner");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void hookNativeLiveAdFloat(ClassLoader loader) {
+        try {
+            Class<?> type = loader.loadClass("com.duowan.kiwi.livead.impl.adfloat.module.RevenueModule");
+            Class<?> liveAd = loader.loadClass("com.duowan.HUYA.LiveRoomAdvertise");
+            Class<?> ad = loader.loadClass("com.duowan.kiwi.livead.api.adfloat.data.Advertisement");
+            Method display = type.getDeclaredMethod("displayAdByMethod", liveAd, ad, long.class, Map.class);
+            hook(display).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                logInfo("blocked native live-room floating promotion");
+                return null;
+            });
+            logInfo("hooked native live-room floating promotion");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+        try {
+            Class<?> type = loader.loadClass("com.duowan.kiwi.universal.live.pubscreen.biz.UniversalLiveAdFloat");
+            Method visibility = type.getDeclaredMethod("changeFloatAdVisibilityIfNeed", boolean.class);
+            hook(visibility).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                if (Boolean.TRUE.equals(chain.getArg(0))) {
+                    logInfo("hid live-room floating ad");
+                    return chain.proceed(new Object[]{false});
+                }
+                return chain.proceed();
+            });
+            logInfo("hooked live-room floating ad visibility");
+        } catch (Throwable failure) {
+            logFailure(failure);
         }
     }
 

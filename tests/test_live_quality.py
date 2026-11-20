@@ -160,7 +160,7 @@ public final class LiveQualityTest {
         self.assertIn("LinkedHashMap", entry)
         self.assertIn("BasePortraitMultiStreamPanel", entry)
         self.assertIn("ILiveComponent", entry)
-        self.assertIn("getMultiLineModule", entry)
+        self.assertIn("tryGetMultiLineModule", entry)
         self.assertIn("getLineIndex", entry)
         self.assertIn("switchLineTo", entry)
         self.assertIn("LiveQuality.select", entry)
