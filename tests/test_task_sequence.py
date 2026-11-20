@@ -201,7 +201,7 @@ public class SequenceTest {
   }
   if("gift-stale-day".equals(scenario)){
    boolean[] rejected={false};
-   engine.sendDiceGrain(ryxq.xxe.uid,"2000-01-01",123,"expired-day",()->true,
+   engine.sendDiceGrain(ryxq.xxe.uid,"2000-01-01",new AutomationRules.GrainPart(123,1,1,1),()->true,
     (success,detail)->rejected[0]=!success);
    if(!rejected[0]||ryxq.TestServer.roomChecks!=0)
     throw new AssertionError("expired gift started a new request");

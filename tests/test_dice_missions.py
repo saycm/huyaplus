@@ -65,6 +65,32 @@ public class DiceMissionsTest {
  }
  public static void main(String[] args){
   Host host=new Host();String test=args[0];
+  if(test.equals("gift-three-claims")||test.equals("gift-three-progress")){
+   boolean separate=test.equals("gift-three-claims");
+   Host gift=new Host(){
+    @Override public void perform(DiceTaskCatalog.Task task,NativeTaskRunner.ActionReply reply){
+     check(!separate||actions==received,"sent another gift before claiming the prior one");
+     actions++;
+     reply.complete(true,"赠送成功");
+    }
+    @Override public void send(String endpoint,TaskWire.Struct request,NativeTaskRunner.Reply reply){
+     if(!endpoint.equals("getJumpGameTaskList")){
+      check(actions>=1&&(separate?actions==received+1:actions==3),"claimed too early");
+      super.send(endpoint,request,reply);
+      return;
+     }
+     int target=separate?1:3,limit=separate?3:1;
+     int progress=separate?actions-received:actions;
+     reply.complete(fields(0,Arrays.asList(fields(0,"server-task",1,"去任意直播间送虎粮",
+       5,2,6,progress,7,target,8,received,9,limit,10,received==limit?2:progress>=target?1:0))),0);
+    }
+   };
+   new DiceMissionRunner(gift,5000,()->gift.finished++).start(10,"2099-01-01");
+   gift.advance(180000);
+   check(gift.actions==3&&gift.claims==(separate?3:1)&&gift.finished==1,
+     "did not complete three separate gifts with server-confirmed rewards");
+   return;
+  }
   if(test.equals("countdown-fairness")){
    Host fair=new Host(){
     @Override public void send(String endpoint,TaskWire.Struct request,NativeTaskRunner.Reply reply){
@@ -166,7 +192,7 @@ class DiceMissionTests(unittest.TestCase):
                     "DiceTaskCatalog", "DiceMissionRunner")], str(harness)],
                 check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             for case in ("normal", "off", "timeout", "deny", "duplicate", "bad-reward",
-                         "gift", "video", "widget", "browse", "browse-unconfirmed",
+                         "gift", "gift-three-claims", "gift-three-progress", "video", "widget", "browse", "browse-unconfirmed",
                          "browse-multi", "browse-claim-unconfirmed", "home", "home-ready",
                          "trial-ready", "paid", "changed",
                          "countdown-fairness", "countdown"):

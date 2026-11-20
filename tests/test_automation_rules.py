@@ -13,13 +13,39 @@ class AutomationRulesTest(unittest.TestCase):
             harness = root / "RulesTest.java"
             harness.write_text('''
 import io.github.saycm.huyaplus.AutomationRules;
+import java.util.*;
 public class RulesTest {
+ static void plan(String config,int choice,String expected){
+  StringJoiner actual=new StringJoiner(",");
+  for(AutomationRules.GrainPart part:AutomationRules.planDiceGrain(
+      AutomationRules.parse(config),bound->choice)){
+   actual.add(part.room+"="+part.count+"@"+part.number+"/"+part.remaining);
+  }
+  if(!expected.equals(actual.toString()))throw new AssertionError(actual.toString());
+ }
  public static void main(String[] args){
+  plan("1=2",0,"");
+  plan("1=8",0,"1=2@1/8,1=3@2/6,1=3@3/3");
+  plan("1=4\\n2=7",0,"1=2@1/4,1=2@2/2,2=7@1/7");
+  plan("1=4\\n2=7",1,"1=4@1/4,2=3@1/7,2=4@2/4");
+  plan("1=1\\n2=3",0,"1=1@1/1,2=1@1/3,2=2@2/2");
+  plan("1=1\\n2=1",0,"");
+  plan("1=1\\n2=1\\n3=1",0,"1=1@1/1,2=1@1/1,3=1@1/1");
+  plan("1=2\\n2=2\\n3=2\\n4=2",0,"");
+  plan("1=all",0,"1=1@1/3,1=1@2/2,1=-1@3/1");
+  plan("1=all\\n2=3",0,"2=3@1/3,1=1@1/2,1=-1@2/1");
+  plan("1=all\\n2=3\\n3=1",0,"2=3@1/3,3=1@1/1,1=-1@1/1");
+  if(!"2=3\\n1=all".equals(AutomationRules.normalize("1=all\\n2=3")))
+   throw new AssertionError("remaining inventory room must run last");
+  if(AutomationRules.giftCount(-1,1,15)!=15 || AutomationRules.giftCount(-1,1,0)!=0
+    || AutomationRules.giftCount(-1,1,2147483648L)!=0
+    || AutomationRules.giftCount(1,3,2)!=0 || AutomationRules.giftCount(2,2,5)!=2)
+   throw new AssertionError("free inventory amount");
   if(!AutomationRules.parse("").isEmpty())throw new AssertionError("empty");
   if(AutomationRules.parse("123=2\\n456=3").get(456L)!=3)
    throw new AssertionError("counts");
   for(String value:new String[]{"0=1","-1=2","123=0","123=-2","123=1.5",
-    "123=2147483648","abc=1","123", "123=1=2", "123=1\\n123=2"}){
+    "123=2147483648","abc=1","123", "123=1=2", "123=1\\n123=2", "123=all\\n456=all"}){
    try{AutomationRules.parse(value);throw new AssertionError("accepted "+value);}
    catch(IllegalArgumentException expected){}
   }

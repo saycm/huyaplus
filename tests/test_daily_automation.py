@@ -280,7 +280,7 @@ public class DailyEngineTest {
     Field busy=DailyAutomation.class.getDeclaredField("giftActive");busy.setAccessible(true);busy.setBoolean(engine,true);
    }
    int[] calls={0};boolean[] accepted={false};
-   engine.sendDiceGrain(xxe.uid,"2099-01-01",55,"single-test-operation",
+   engine.sendDiceGrain(xxe.uid,"2099-01-01",new AutomationRules.GrainPart(55,1,1,1),
     ()->!args[0].equals("dice-off"),(ok,detail)->{calls[0]++;accepted[0]=ok;});
    Handler.advance(100000);
    if(calls[0]!=1||accepted[0])throw new AssertionError("disabled/busy/unavailable gift incorrectly completed");

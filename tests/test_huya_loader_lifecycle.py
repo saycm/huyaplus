@@ -30,7 +30,7 @@ public class Activity {
     "android/content/pm/PackageManager.java": """
 package android.content.pm;
 public class PackageManager {
- public static String huyaVersion="13.5.62";
+ public static String huyaVersion="13.5.63";
  public static class NameNotFoundException extends Exception {}
  public PackageInfo getPackageInfo(String name,int flags)throws NameNotFoundException{
   if(!"com.duowan.kiwi".equals(name)||huyaVersion==null)throw new NameNotFoundException();
@@ -363,7 +363,7 @@ public final class RootGateTest {
  public static void main(String[] args) throws Throwable {
   ContentResolver.rootStatus=args[0];
   if(args.length>1)android.content.pm.PackageManager.huyaVersion="missing".equals(args[1])?null:args[1];
-  boolean supported=args.length==1||"13.5.62".equals(args[1]);
+  boolean supported=args.length==1||"13.5.62".equals(args[1])||"13.5.63".equals(args[1]);
   HuyaCompatEntry entry=new HuyaCompatEntry();
   entry.onPackageReady(new LoaderLifecycleTest.Param("com.duowan.kiwi",new LoaderLifecycleTest.Recorder()));
   ClassLoader loader=new LoaderLifecycleTest.ActivityLoader();
@@ -809,14 +809,15 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
                     str(JDK / "bin" / ("java" + EXE)),
                     "-cp",
                     os.pathsep.join([str(root / "classes"), str(android)]),
-                    "LoaderLifecycleTest", "13.5.62",
+                    "LoaderLifecycleTest", "13.5.63",
                 ],
                 capture_output=True,
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            root_cases = [(status, "13.5.62") for status in ("granted", "denied", "missing", "unavailable")]
-            root_cases += [("granted", version) for version in ("13.5.44", "13.5.61", "13.5.63", "missing")]
+            root_cases = [(status, version) for version in ("13.5.62", "13.5.63")
+                          for status in ("granted", "denied", "missing", "unavailable")]
+            root_cases += [("granted", version) for version in ("13.5.44", "13.5.61", "13.5.64", "missing")]
             for status, version in root_cases:
                 with self.subTest(root=status, version=version):
                     result = subprocess.run(
@@ -856,7 +857,7 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
             quality_cases = [(case,) for case in (
                 "retry", "switch-error", "bounded", "stale", "manual", "follow",
                 "notice", "notice-original", "swipe-ready")]
-            quality_cases += [("retry", "13.5.62"), ("notice-original", "13.5.62")]
+            quality_cases += [("retry", version) for version in ("13.5.62", "13.5.63")]
             for case in quality_cases:
                 with self.subTest(quality=case):
                     result = subprocess.run(

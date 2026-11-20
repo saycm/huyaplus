@@ -42,7 +42,7 @@ final class DiceTaskCatalog {
         }
         String statusDetail() {
             String scope;
-            if (freeGrain()) scope = "按配置的优先房间逐笔赠送免费虎粮，服务端达标后领取。";
+            if (freeGrain()) scope = "共用每日自定义赠送额度，符合条件时拆成三笔，服务端达标后领取。";
             else if (marketVisit()) scope = "后台提交商城任务事件；只有服务端进度及已领次数增加才算完成。";
             else if (type == 6) scope = "尝试后台奖励回调，无广告画面；服务端确认后领取，失败不重试。";
             else scope = "按服务端剩余倒计时后台等待，再复核并领取。";

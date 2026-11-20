@@ -12,6 +12,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Switch;
@@ -54,12 +55,7 @@ final class AutomationPanel {
             diceMissions = toggle(root, "执行骰子任务及领取奖励", GlassSettings.KEY_DICE_MISSIONS);
             welfareSign = toggle(root, "任务中心每日签到", GlassSettings.KEY_DICE_WELFARE_SIGN);
             label(root, "开启要自动执行的任务。修改后强制停止虎牙再打开。", 13);
-            label(root, "送虎粮 · 自定义优先直播间", 17);
-            label(root, "按列表顺序，每次赠送 1 个免费虎粮并复核进度。数量为骰子任务每日赠送上限，与二级页赠送独立；未配置不送礼。", 13);
-            roomList = column();
-            root.addView(roomList);
-            add = button(root, "添加直播间", view -> editRoom(null, null));
-            add.setEnabled(false);
+            label(root, "送虎粮任务共用每日自动任务里的自定义赠送。配置允许时拆成 3 笔，每个直播间每日总量按原配置。", 13);
             taskSummary = label(root, "骰子任务 · 等待虎牙同步", 14);
             refreshTasks = button(root, "刷新任务列表", view -> syncTasks());
             refreshTasks.setEnabled(false);
@@ -265,24 +261,16 @@ final class AutomationPanel {
 
     private Map<Long, Integer> rooms() {
         return new LinkedHashMap<>(AutomationRules.parse(
-                prefs.getString(roomsKey(), "")));
-    }
-
-    private String roomsKey() {
-        return dicePage ? GlassSettings.KEY_DICE_GIFT_ROOMS : GlassSettings.KEY_GIFT_ROOMS;
+                prefs.getString(GlassSettings.KEY_GIFT_ROOMS, "")));
     }
 
     private void renderRooms() {
         roomList.removeAllViews();
         for (Map.Entry<Long, Integer> room : rooms().entrySet()) {
             LinearLayout row = column();
-            label(row, "直播间 " + room.getKey() + " · 每天 " + room.getValue() + " 个免费虎粮", 15);
-            if (dicePage) button(row, "置顶", view -> {
-                Map<Long, Integer> values = new LinkedHashMap<>();
-                values.put(room.getKey(), room.getValue());
-                values.putAll(rooms());
-                saveRooms(values);
-            });
+            String amount = room.getValue() == AutomationRules.ALL_FREE_GRAIN
+                    ? "赠送剩余免费虎粮" : "每天 " + room.getValue() + " 个免费虎粮";
+            label(row, "直播间 " + room.getKey() + " · " + amount, 15);
             button(row, "修改", view -> editRoom(room.getKey(), room.getValue()));
             button(row, "删除", view -> {
                 Map<Long, Integer> values = rooms();
@@ -307,9 +295,17 @@ final class AutomationPanel {
         count.setHintTextColor(activity.getColor(R.color.glass_secondary));
         count.setInputType(InputType.TYPE_CLASS_NUMBER);
         if (oldRoom != null) room.setText(oldRoom.toString());
-        if (oldCount != null) count.setText(oldCount.toString());
+        if (oldCount != null && oldCount != AutomationRules.ALL_FREE_GRAIN) count.setText(oldCount.toString());
+        CheckBox all = new CheckBox(activity);
+        all.setText("赠送剩余免费虎粮");
+        all.setTextColor(activity.getColor(R.color.glass_text));
+        all.setChecked(oldCount != null && oldCount == AutomationRules.ALL_FREE_GRAIN);
+        count.setVisibility(all.isChecked() ? View.GONE : View.VISIBLE);
+        all.setOnCheckedChangeListener((button, checked) -> count.setVisibility(checked ? View.GONE : View.VISIBLE));
         fields.addView(room);
+        fields.addView(all);
         fields.addView(count);
+        label(fields, "仅可为一个直播间启用。固定数量的房间先执行，剩余免费虎粮最后送出。", 13);
         AlertDialog dialog = new AlertDialog.Builder(activity,
                 android.R.style.Theme_Material_Light_Dialog_Alert).setTitle("免费虎粮赠送")
                 .setView(fields).setNegativeButton("取消", null)
@@ -320,12 +316,16 @@ final class AutomationPanel {
                     try {
                         Map<Long, Integer> values = rooms();
                         Map<Long, Integer> single = AutomationRules.parse(
-                                room.getText().toString() + "=" + count.getText().toString());
+                                room.getText().toString() + "=" + (all.isChecked() ? "all" : count.getText()));
                         long id = single.keySet().iterator().next();
                         if (values.containsKey(id) && !Long.valueOf(id).equals(oldRoom)) {
                             throw new IllegalArgumentException("该直播间已添加");
                         }
                         if (oldRoom != null) values.remove(oldRoom);
+                        if (all.isChecked() && values.containsValue(AutomationRules.ALL_FREE_GRAIN)) {
+                            Toast.makeText(activity, "已有直播间设置赠送剩余免费虎粮", Toast.LENGTH_SHORT).show();
+                            return;
+                        }
                         values.putAll(single);
                         saveRooms(values);
                         dialog.dismiss();
@@ -340,9 +340,9 @@ final class AutomationPanel {
         if (prefs == null) return;
         StringBuilder text = new StringBuilder();
         for (Map.Entry<Long, Integer> room : values.entrySet()) {
-            text.append(room.getKey()).append('=').append(room.getValue()).append('\n');
+            text.append(room.getKey()).append('=').append(AutomationRules.savedCount(room.getValue())).append('\n');
         }
-        prefs.edit().putString(roomsKey(), text.toString()).apply();
+        prefs.edit().putString(GlassSettings.KEY_GIFT_ROOMS, text.toString()).apply();
         renderRooms();
     }
 

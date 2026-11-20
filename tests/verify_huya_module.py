@@ -61,8 +61,8 @@ def main() -> None:
     assert 'package="io.github.saycm.huyaplus"' in manifest
     assert "io.github.libxposed.service.XposedProvider" in manifest
     assert "io.github.saycm.huyaplus.XposedService" in manifest
-    assert run(str(APKANALYZER), "manifest", "version-code", str(args.module)).strip() == "23"
-    assert run(str(APKANALYZER), "manifest", "version-name", str(args.module)).strip() == "1.22"
+    assert run(str(APKANALYZER), "manifest", "version-code", str(args.module)).strip() == "24"
+    assert run(str(APKANALYZER), "manifest", "version-name", str(args.module)).strip() == "1.23"
     assert "xposedmodule" not in manifest
     assert "xposedminversion" not in manifest
 
@@ -179,14 +179,14 @@ def main() -> None:
     assert ".method public dismissWhenError(Ljava/lang/String;)V" in splash_code
 
     display_interfaces = {
-        "ryxq.ev6": (
+        "ryxq.d05": (
             ".method public static a(Lcom/duowan/jce/wup/UniPacket;IILjava/lang/Number;"
-            "Lcom/huya/kiwi/crossplatform/common/wup/HybridJceCallback;)Lryxq/ev6;",
+            "Lcom/huya/kiwi/crossplatform/common/wup/HybridJceCallback;)Lryxq/d05;",
         ),
         "com.huya.kiwi.crossplatform.common.wup.HybridJceCallback": (
             ".method public abstract onResponse([B)V",
             ".method public abstract onTraceId(Ljava/lang/String;)V",
-            ".method public abstract a(Lryxq/zu6;)V",
+            ".method public abstract a(Lryxq/yz4;)V",
         ),
         "com.duowan.jce.wup.UniPacket": (
             ".method public constructor <init>()V",
@@ -224,6 +224,10 @@ def main() -> None:
         ),
         "com.duowan.kiwi.ad.impl.HyAdModule": (
             ".method public isNeedShieldAdOutLivingRoom()Z",
+        ),
+        "com.duowan.kiwi.liveend.impl.views.NotLivingView": (
+            ".method public onShowStopLiveAdEvent("
+            "Lcom/duowan/kiwi/livead/api/adplugin/event/IPresenterAdEvent$ShowNotLiveAdEvent;)V",
         ),
         "com.duowan.kiwi.list.patface.chain.PatFaceInterceptorChain": (
             ".method public final proceed(I)Z",

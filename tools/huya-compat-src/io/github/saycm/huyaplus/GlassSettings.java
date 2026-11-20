@@ -22,7 +22,6 @@ public final class GlassSettings {
     public static final String KEY_AUTO_DICE = "auto_dice";
     public static final String KEY_DICE_MISSIONS = "dice_missions";
     public static final String KEY_DICE_WELFARE_SIGN = "dice_welfare_sign";
-    public static final String KEY_DICE_GIFT_ROOMS = "dice_gift_rooms";
     public static final String KEY_TASK_INTERVAL = "task_interval_seconds";
     public static final String KEY_TASK_ENABLED_PREFIX = "task_enabled_v1/";
 

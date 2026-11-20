@@ -10,6 +10,41 @@ from test_huya_loader_lifecycle import JDK, ROOT, SDK, SOURCES
 
 DISPLAY_SOURCES = dict(SOURCES)
 DISPLAY_SOURCES.update({
+    "com/duowan/kiwi/livead/api/adplugin/event/IPresenterAdEvent.java": """
+package com.duowan.kiwi.livead.api.adplugin.event;
+public interface IPresenterAdEvent {
+ class ShowNotLiveAdEvent {}
+}
+""",
+    "com/duowan/kiwi/liveend/impl/views/NotLivingView.java": """
+package com.duowan.kiwi.liveend.impl.views;
+import com.duowan.kiwi.livead.api.adplugin.event.IPresenterAdEvent.ShowNotLiveAdEvent;
+public class NotLivingView {
+ public int ads,replays;
+ public void onShowStopLiveAdEvent(ShowNotLiveAdEvent event){ads++;}
+ public void playLiveRecord(){replays++;}
+}
+""",
+    "com/huya/hybrid/webview/HYWebView.java": """
+package com.huya.hybrid.webview;
+public class HYWebView {
+ public int committed;
+ public void onPageCommitVisible(String url){committed++;}
+}
+""",
+    "com/duowan/kiwi/crossplatform/base/webview/KiwiWebView.java": """
+package com.duowan.kiwi.crossplatform.base.webview;
+import android.webkit.ValueCallback;
+import com.huya.hybrid.webview.HYWebView;
+public class KiwiWebView extends HYWebView {
+ public int finished, injections;
+ public void onPageFinished(String url){finished++;}
+ public void evaluateJavascript(String script,ValueCallback<String> callback){
+  injections++;
+  callback.onReceiveValue("true");
+ }
+}
+""",
     "com/duowan/kiwi/livead/api/adbanner/view/AdLiveBannerView.java": """
 package com.duowan.kiwi.livead.api.adbanner.view;
 import java.util.*;
@@ -293,6 +328,8 @@ import java.lang.reflect.Proxy;
 import android.content.SharedPreferences;
 import io.github.libxposed.api.XposedModule;
 import io.github.saycm.huyaplus.HuyaCompatEntry;
+import com.duowan.kiwi.crossplatform.base.webview.KiwiWebView;
+import com.huya.hybrid.webview.HYWebView;
 import com.duowan.HUYA.LiveRoomAdvertise;
 import com.duowan.kiwi.livead.api.adbanner.view.AdLiveBannerView;
 import com.duowan.kiwi.livead.api.adfloat.data.Advertisement;
@@ -385,7 +422,7 @@ public class DisplayAdsTest {
    prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
     (proxy,method,values)->settings.getOrDefault(values[0],(Boolean)values[1])));
   }
-  if(args[0].equals("immerse-insert")){
+  if(args[0].equals("immerse-insert")||args[0].equals("sign-popup")||args[0].equals("offline-room")){
    Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
    prefs.setAccessible(true);
    prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
@@ -394,6 +431,35 @@ public class DisplayAdsTest {
   XposedModule.invokeHook(
    android.app.Activity.class.getDeclaredMethod("onCreate",android.os.Bundle.class),
    new ActivityChain(new android.app.Activity()));
+  if(args[0].equals("offline-room")){
+   var view=new com.duowan.kiwi.liveend.impl.views.NotLivingView();
+   var event=new com.duowan.kiwi.livead.api.adplugin.event.IPresenterAdEvent.ShowNotLiveAdEvent();
+   call(view,"onShowStopLiveAdEvent",new Class<?>[]{event.getClass()},event);
+   call(view,"playLiveRecord",new Class<?>[]{});
+   check(view.ads==(Boolean.parseBoolean(args[1])?0:1),"offline-room ad switch ignored");
+   check(view.replays==1,"offline-room replay was blocked");
+   return;
+  }
+  if(args[0].equals("sign-popup")){
+   KiwiWebView view=new KiwiWebView();
+   for(String url:new String[]{
+     "https://hd.huya.com/h5/welfare_center/free_gift_daily.html",
+     "https://example.com/h5/welfare_center/index.html",
+     "https://hd.huya.com/h5/welfare_center/index.html/other"}){
+    call(view,"onPageFinished",new Class<?>[]{String.class},url);
+   }
+   check(view.injections==0,"unrelated page received the sign popup filter");
+   String taskCenter="https://hd.huya.com/h5/welfare_center/index.html?source=mine";
+   call(view,"onPageFinished",new Class<?>[]{String.class},taskCenter);
+   check(view.finished==4,"page lifecycle did not complete");
+   call(view,"onPageCommitVisible",new Class<?>[]{String.class},taskCenter);
+   HYWebView unrelatedView=new HYWebView();
+   call(unrelatedView,"onPageCommitVisible",new Class<?>[]{String.class},taskCenter);
+   check(view.committed==1&&unrelatedView.committed==1,"page commit callback did not complete");
+   check(view.injections==(Boolean.parseBoolean(args[1])?2:0),
+         "task-center promotion filter did not respect the ad switch");
+   return;
+  }
   if(args[0].equals("native-live-ads")){
    boolean filterBanner=args.length==3&&Boolean.parseBoolean(args[1]);
    boolean filterFloat=args.length==3&&Boolean.parseBoolean(args[2]);
@@ -757,6 +823,16 @@ class HuyaDisplayAdsTest(unittest.TestCase):
         for enabled in ("false", "true"):
             with self.subTest(enabled=enabled):
                 self.run_case("immerse-insert", enabled)
+
+    def test_sign_popup_promotion_filter_is_scoped_to_task_center(self):
+        for enabled in ("true", "false"):
+            with self.subTest(enabled=enabled):
+                self.run_case("sign-popup", enabled)
+
+    def test_offline_room_ad_is_blocked_before_playback_and_replay_stays_available(self):
+        for enabled in ("true", "false"):
+            with self.subTest(enabled=enabled):
+                self.run_case("offline-room", enabled)
 
     def test_swipe_feed_keeps_only_normal_items_from_both_data_formats(self):
         self.run_case("immerse-adapter")

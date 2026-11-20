@@ -83,7 +83,8 @@ final class DiceMissionRunner {
         if (task.status == 2 || task.claimed >= task.total) {
             host.log(task.title, "已领取", "服务端已领取或达到今日上限"); next(); return;
         }
-        if (++rounds > Math.min(100, task.total + 1)) { next(); return; }
+        int extraRounds = task.freeGrain() ? 3 : 1;
+        if (++rounds > Math.min(100, task.total + extraRounds)) { next(); return; }
         long delay = interval;
         if (task.status == 0 && task.type == 9) {
             long remaining = Math.max(0L, (long) task.target - task.progress);
@@ -103,7 +104,10 @@ final class DiceMissionRunner {
 
     private String key(String kind, DiceTaskCatalog.Task task) {
         String prefix = "dice-mission-" + kind + "/" + account + "/" + date + "/" + task.id;
-        return kind.equals("action") && task.marketVisit() ? prefix : prefix + "/" + task.claimed;
+        if (kind.equals("action") && task.marketVisit()) return prefix;
+        String key = prefix + "/" + task.claimed;
+        return kind.equals("action") && task.freeGrain() && task.target > 1 && task.progress > 0
+                ? key + "/" + task.progress : key;
     }
 
     private void action(DiceTaskCatalog.Task task) {
@@ -112,7 +116,7 @@ final class DiceMissionRunner {
         }
         int id = ++requestId;
         waiting = true;
-        host.later(95000 + interval * 4, () -> {
+        host.later(95000 + interval * (task.freeGrain() ? 5 : 4), () -> {
             if (waiting && requestId == id) stop("动作结果未确认，停止本轮且不重试");
         });
         try {
@@ -151,6 +155,9 @@ final class DiceMissionRunner {
                 return;
             }
             if (!performed && current.type == 9 && current.progress > previous.progress) {
+                schedule(current); return;
+            }
+            if (performed && current.freeGrain() && current.progress > previous.progress) {
                 schedule(current); return;
             }
             host.log(current.title, "服务端未确认",

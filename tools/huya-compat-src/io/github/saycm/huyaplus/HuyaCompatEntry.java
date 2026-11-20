@@ -11,6 +11,7 @@ import android.util.Log;
 import android.util.Pair;
 import android.view.View;
 import android.view.ViewParent;
+import android.webkit.ValueCallback;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
@@ -49,6 +50,49 @@ public final class HuyaCompatEntry extends XposedModule {
             "com.duowan.kiwi.adsplash.view.AdSplashFragment";
     private static final String AWARD_MANAGER_CLASS =
             "com.duowan.biz.videoad.impl.HyLotteryAdAwardManager";
+    private static final String TASK_CENTER_URL =
+            "https://hd.huya.com/h5/welfare_center/index.html";
+    private static final String TASK_CENTER_AD_SCRIPT =
+            "(function(){"
+            + "if(location.origin+location.pathname!=='" + TASK_CENTER_URL + "'||!document.head)return;"
+            + "var existing=document.getElementById('huyaplus-task-center-ad-style');"
+            + "if(existing)return existing.hasAttribute('data-popup-filter');"
+            + "var style=document.createElement('style');"
+            + "style.id='huyaplus-task-center-ad-style';"
+            + "style.textContent='.sign-popup .sign-popup-wrap-srcoll > .suggest,"
+            + ".sign-popup .sign-popup-wrap-srcoll > .suggest-static,"
+            + ".app-intermodal-task.huyaplus-hide-download-zone{display:none!important}';"
+            + "document.head.appendChild(style);"
+            + "function hideDownloadZone(){"
+            + "document.querySelectorAll('section.app-intermodal-task').forEach(function(section){"
+            + "var matches=Array.prototype.some.call(section.querySelectorAll('.intermodal-tab'),function(tab){"
+            + "var icon=tab.querySelector('img');"
+            + "return (tab.textContent.trim()||(icon&&icon.alt))==='下载专区';"
+            + "});"
+            + "section.classList.toggle('huyaplus-hide-download-zone',matches);"
+            + "});"
+            + "}"
+            + "new MutationObserver(hideDownloadZone).observe(document.documentElement,"
+            + "{childList:true,subtree:true,characterData:true});"
+            + "hideDownloadZone();"
+            // Wait for the popup queue and the last deferred task-center bundle to register.
+            + "var chunks=window.rspackChunkwelfare_center=window.rspackChunkwelfare_center||[];"
+            + "chunks.push([['huyaplus-task-center-ads'],{},function(require){"
+            + "require.O(undefined,['6097','4418'],function(){"
+            + "if(!require.m[75015])return;"
+            + "var queue=require(75015).A;"
+            + "if(!queue||typeof queue.enqueue!=='function')return;"
+            + "var enqueue=queue.enqueue;"
+            + "queue.enqueue=function(task){"
+            + "if(task&&task.source==='gold-coin'&&task.latestKey==='gold-coin:index'"
+            + "&&task.payload&&task.payload.iWindowType===4)return;"
+            + "return enqueue.apply(this,arguments);"
+            + "};"
+            + "style.setAttribute('data-popup-filter','ready');"
+            + "});"
+            + "}]);"
+            + "return style.hasAttribute('data-popup-filter');"
+            + "})()";
 
     private static final AtomicInteger AMS_REQUESTS = new AtomicInteger();
     private static final AtomicInteger AMS_SESSIONS = new AtomicInteger();
@@ -183,9 +227,11 @@ public final class HuyaCompatEntry extends XposedModule {
             hookStartupGuide(classLoader);
             hookDisplayAds(classLoader);
             hookImmerseFeedAds(classLoader);
+            hookOfflineRoomAd(classLoader);
             hookListAds(classLoader);
             hookSplash(classLoader);
         }
+        hookTaskCenterPromotions(classLoader);
         if (liveCards) {
             hookLiveRoomCards(classLoader);
         }
@@ -200,6 +246,38 @@ public final class HuyaCompatEntry extends XposedModule {
         }
         if (vip4k) {
             hookVip4KPlayback(classLoader);
+        }
+    }
+
+    private void hookTaskCenterPromotions(ClassLoader loader) {
+        try {
+            Class<?> webView = loader.loadClass("com.duowan.kiwi.crossplatform.base.webview.KiwiWebView");
+            Method onPageFinished = webView.getDeclaredMethod("onPageFinished", String.class);
+            Method evaluateJavascript = webView.getMethod(
+                    "evaluateJavascript", String.class, ValueCallback.class);
+            ValueCallback<String> applied = value -> {
+                if ("true".equals(value)) logInfo("task center promotion filter ready");
+            };
+            Hooker applyFilter = chain -> {
+                Object result = chain.proceed();
+                String url = (String) chain.getArg(0);
+                if (webView.isInstance(chain.getThisObject())
+                        && url != null && TASK_CENTER_URL.equals(url.split("[?#]", 2)[0])
+                        && isEnabled(GlassSettings.KEY_ADS)) {
+                    try {
+                        evaluateJavascript.invoke(chain.getThisObject(), TASK_CENTER_AD_SCRIPT, applied);
+                    } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+                        logFailure(failure);
+                    }
+                }
+                return result;
+            };
+            hook(onPageFinished).intercept(applyFilter);
+            Method onPageCommitVisible = loader.loadClass("com.huya.hybrid.webview.HYWebView")
+                    .getDeclaredMethod("onPageCommitVisible", String.class);
+            hook(onPageCommitVisible).intercept(applyFilter);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
         }
     }
 
@@ -940,6 +1018,21 @@ public final class HuyaCompatEntry extends XposedModule {
             }
         } catch (Throwable throwable) {
             logFailure(throwable);
+        }
+    }
+
+    private void hookOfflineRoomAd(ClassLoader loader) {
+        try {
+            Class<?> view = loader.loadClass("com.duowan.kiwi.liveend.impl.views.NotLivingView");
+            Class<?> event = loader.loadClass(
+                    "com.duowan.kiwi.livead.api.adplugin.event.IPresenterAdEvent$ShowNotLiveAdEvent");
+            Method show = view.getDeclaredMethod("onShowStopLiveAdEvent", event);
+            hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                logInfo("blocked offline-room autoplay ad");
+                return null;
+            });
+        } catch (Throwable failure) {
+            logFailure(failure);
         }
     }
 

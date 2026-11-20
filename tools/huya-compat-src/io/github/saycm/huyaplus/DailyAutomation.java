@@ -66,7 +66,7 @@ final class DailyAutomation {
     private DailyAutomation diceSender;
     private NativeTaskRunner.ActionReply diceGiftReply;
     private java.util.function.BooleanSupplier diceGiftAllowed;
-    private String diceGiftKey;
+    private AutomationRules.GrainPart diceGrainPart;
     private Runnable afterBadges;
     private long requestInterval = 30000L;
     private boolean requestGap;
@@ -549,7 +549,7 @@ final class DailyAutomation {
         }
     }
 
-    void sendDiceGrain(long uid, String day, long room, String operationKey,
+    void sendDiceGrain(long uid, String day, AutomationRules.GrainPart part,
                        java.util.function.BooleanSupplier allowed, NativeTaskRunner.ActionReply reply) {
         if (giftActive || diceSender != null && diceSender.diceGiftReply != null) {
             reply.complete(false, "其他免费虎粮任务仍在处理，本轮不并发送礼");
@@ -562,10 +562,10 @@ final class DailyAutomation {
         sender.activeDay = uid + "/" + day; sender.grainBudget = -1;
         sender.requestInterval = NativeTaskCatalog.intervalSeconds(
                 prefs.getString(GlassSettings.KEY_TASK_INTERVAL, "30")) * 1000L;
-        sender.diceGiftAllowed = allowed; sender.diceGiftKey = operationKey;
+        sender.diceGiftAllowed = allowed; sender.diceGrainPart = part;
         sender.diceGiftReply = reply;
         sender.giftRound = new GiftRound(uid, sender.activeDay);
-        sender.giftRooms.add(new java.util.AbstractMap.SimpleImmutableEntry<>(room, 1));
+        sender.giftRooms.add(new java.util.AbstractMap.SimpleImmutableEntry<>(part.room, part.count));
         try {
             sender.installCallbacks();
             sender.nextGiftRoom(sender.giftRound);
@@ -574,7 +574,7 @@ final class DailyAutomation {
         }
         handler.postDelayed(() -> {
             if (sender.diceGiftReply == reply) sender.finishDiceGift(false, "赠送结果未确认，不自动重发");
-        }, 85000L + sender.requestInterval * 3);
+        }, 85000L + sender.requestInterval * 4);
     }
 
     private void finishDiceGift(boolean success, String detail) {
@@ -654,7 +654,9 @@ final class DailyAutomation {
                         return;
                     }
                     long presenter = ((Number) value(notice, "lPresenterUid")).longValue();
-                    if (diceGiftKey == null && store.hasClaim(dailyGiftKey(round, presenter))) {
+                    if ((diceGrainPart == null || diceGrainPart.number == 1)
+                            && store.hasClaim(dailyGiftKey(round, presenter))) {
+                        log("免费虎粮", target, "跳过", "今日已提交过该主播的赠送");
                         attemptedGiftRooms.add(room.getKey());
                         nextGiftRoomLater(round, 1200L);
                         return;
@@ -700,10 +702,14 @@ final class DailyAutomation {
                 }
                 grainBudget = free;
                 log("免费库存", target, "成功", "服务端返回可用免费虎粮 " + Math.max(0, free));
-                if (free < count) {
-                    log("免费虎粮", target, "跳过", "免费库存不足，需要 " + count + "，当前可用 " + Math.max(0, free));
+                int required = diceGrainPart == null ? Math.max(1, count) : diceGrainPart.remaining;
+                int amount = AutomationRules.giftCount(count, required, free);
+                if (amount == 0) {
+                    log("免费虎粮", target, "跳过", free < required
+                            ? "免费库存不足，需要 " + required + "，当前可用 " + Math.max(0, free)
+                            : "免费库存超出单笔支持范围");
                     nextGiftRoomLater(round, 1200L);
-                } else prepareGrain(round, room, presenter, count, free);
+                } else prepareGrain(round, room, presenter, amount, free);
             } catch (ReflectiveOperationException | RuntimeException failure) {
                 Throwable cause = failure.getCause() == null ? failure : failure.getCause();
                 log("免费虎粮", target, "失败", "免费库存或送礼接口不匹配："
@@ -890,7 +896,7 @@ final class DailyAutomation {
                             "com.duowan.kiwi.props.api.request.SendGiftResult$Success")) {
                         grainBudget -= count;
                         log("免费虎粮", target, "成功", "收到虎牙送礼成功回执");
-                        finishDiceGift(true, "已收到 1 个免费虎粮赠送回执，等待骰子任务进度复核");
+                        finishDiceGift(true, "已收到 " + count + " 个免费虎粮的赠送回执，等待骰子任务进度复核");
                     } else {
                         log("免费虎粮", target, "未完成", result == null ? "回执缺失" : result.getClass().getSimpleName());
                         skipRemainingGifts("前一笔赠送未成功，本轮停止后续赠送");
@@ -911,14 +917,23 @@ final class DailyAutomation {
         Object giftService = service(serviceType.getName());
         if (giftService == null) throw new IllegalStateException("Gift service unavailable");
         if (!continueGiftRound(round)) return;
-        if (!claim(diceGiftKey == null ? dailyGiftKey(round, presenter)
-                : "dice-gift-send/" + round.day + "/" + diceGiftKey)) {
+        String key = dailyGiftKey(round, presenter);
+        if (diceGrainPart != null && diceGrainPart.number > 1) {
+            String previous = diceGrainPart.number == 2 ? key
+                    : key + "/part/" + (diceGrainPart.number - 1);
+            if (!store.hasClaim(previous)) {
+                finishDiceGift(false, "当前主播没有上一笔赠送记录，停止拆分赠送");
+                return;
+            }
+            key += "/part/" + diceGrainPart.number;
+        }
+        if (!claim(key)) {
             limit.blocked = true;
             log("免费虎粮", target, "跳过", "今日已经提交过该主播的赠送，不重复发送");
             nextGiftRoomLater(round, 1200L);
             return;
         }
-        if (diceGiftKey == null) attemptedGiftRooms.add(room);
+        if (diceGrainPart == null) attemptedGiftRooms.add(room);
         log("免费虎粮", target, "请求已发出", "仅使用背包免费库存，等待回执");
         send.invoke(giftService, params, callback);
         handler.postDelayed(() -> {
@@ -940,8 +955,9 @@ final class DailyAutomation {
         giftRound = null;
         Map.Entry<Long, Integer> pending;
         while ((pending = giftRooms.poll()) != null) {
-            log("免费虎粮", "直播间 " + pending.getKey() + " · " + pending.getValue() + " 个免费虎粮",
-                    "未执行", reason);
+            String amount = pending.getValue() == AutomationRules.ALL_FREE_GRAIN
+                    ? "剩余免费虎粮" : pending.getValue() + " 个免费虎粮";
+            log("免费虎粮", "直播间 " + pending.getKey() + " · " + amount, "未执行", reason);
         }
     }
 

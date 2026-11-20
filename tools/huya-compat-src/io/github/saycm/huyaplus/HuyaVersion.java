@@ -5,7 +5,9 @@ import android.content.pm.PackageManager;
 
 final class HuyaVersion {
     static final String PACKAGE_NAME = "com.duowan.kiwi";
-    static final String SUPPORTED = "13.5.62";
+    private static final String VERSION_62 = "13.5.62";
+    private static final String VERSION_63 = "13.5.63";
+    static final String SUPPORTED = VERSION_62 + " / " + VERSION_63;
 
     private HuyaVersion() {}
 
@@ -19,6 +21,6 @@ final class HuyaVersion {
     }
 
     static boolean supports(String version) {
-        return SUPPORTED.equals(version);
+        return VERSION_62.equals(version) || VERSION_63.equals(version);
     }
 }
