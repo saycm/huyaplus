@@ -5,7 +5,7 @@ import java.util.Locale;
 public final class GlassSettings {
     public static final String PREFS = "glass_settings";
     static final String MODULE_PROVIDER = "io.github.saycm.huyaplus.tasks";
-    static final String VERIFY_ROOT = "verify_root";
+    static final String ROOT_PREFS = "root_access";
     static final String ROOT_GRANTED = "root_granted";
     public static final String KEY_ADS = "ads";
     public static final String KEY_LIVE_CARDS = "live_cards";

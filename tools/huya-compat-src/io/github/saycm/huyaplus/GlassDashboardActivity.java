@@ -48,7 +48,7 @@ public final class GlassDashboardActivity extends Activity {
 
     private void showRootStatus(boolean failed) {
         TextView status = findViewById(R.id.root_status);
-        boolean authorized = RootAccess.wasAuthorized(this);
+        boolean authorized = RootAccess.verify(this);
         status.setText(!supportedVersion ? getString(R.string.root_version_required, HuyaVersion.SUPPORTED)
                 : getString(requestingRoot ? R.string.root_checking
                 : authorized ? R.string.root_configured
@@ -66,6 +66,7 @@ public final class GlassDashboardActivity extends Activity {
         showRootStatus(false);
         new Thread(() -> {
             boolean granted = RootAccess.request(getApplicationContext());
+            GlassSettingsBridge.syncRootGrant(getApplicationContext());
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 requestingRoot = false;
@@ -79,6 +80,7 @@ public final class GlassDashboardActivity extends Activity {
         setFrameworkStatus(false, false);
         GlassSettingsBridge.connect(remote -> runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
+            if (remote != null) GlassSettingsBridge.syncRootGrant(getApplicationContext());
             frameworkLoaded = remote != null;
             setFrameworkStatus(remote != null, remote == null);
         }));

@@ -1,5 +1,6 @@
 package io.github.saycm.huyaplus;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
 
@@ -61,5 +62,17 @@ public final class GlassSettingsBridge {
 
     public static SharedPreferences get() {
         return connected;
+    }
+
+    static void syncRootGrant(Context context) {
+        XposedService service = boundService;
+        if (service == null) return;
+        try {
+            if (!RootAccess.syncTo(context, service.getRemotePreferences(GlassSettings.ROOT_PREFS))) {
+                Log.w(TAG, "Root authorization was not saved to LSPosed");
+            }
+        } catch (RuntimeException | LinkageError failure) {
+            Log.w(TAG, "Root authorization could not sync to LSPosed", failure);
+        }
     }
 }

@@ -51,16 +51,6 @@ public final class TaskLogProvider extends ContentProvider {
         String[] callers = getContext().getPackageManager().getPackagesForUid(Binder.getCallingUid());
         boolean huya = callers != null && Arrays.asList(callers).contains("com.duowan.kiwi");
         if (!owner && !huya) throw new SecurityException("Caller is not allowed");
-        if (GlassSettings.VERIFY_ROOT.equals(method)) {
-            long identity = Binder.clearCallingIdentity();
-            try {
-                Bundle result = new Bundle();
-                result.putBoolean(GlassSettings.ROOT_GRANTED, RootAccess.verify(getContext()));
-                return result;
-            } finally {
-                Binder.restoreCallingIdentity(identity);
-            }
-        }
         SQLiteDatabase db = helper.getWritableDatabase();
         Bundle result = new Bundle();
         if ("import".equals(method)) {

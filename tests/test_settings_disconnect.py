@@ -10,10 +10,21 @@ ROOT = Path(__file__).resolve().parents[1]
 class SettingsDisconnectTest(unittest.TestCase):
     def test_death_invalidates_cached_preferences_and_notifies_view(self):
         sources = {
+            "android/content/Context.java":
+                "package android.content; public class Context {}",
             "android/content/SharedPreferences.java":
                 "package android.content; public interface SharedPreferences {}",
             "android/util/Log.java":
-                "package android.util; public class Log { public static int w(String a,String b,Throwable t){return 0;} }",
+                "package android.util; public class Log { public static int w(String a,String b,Throwable... t){return 0;} }",
+            "io/github/saycm/huyaplus/RootAccess.java": """
+package io.github.saycm.huyaplus;
+final class RootAccess {
+ static int synced;
+ static boolean syncTo(android.content.Context context,android.content.SharedPreferences remote){
+  synced++;
+  return true;
+ }
+}""",
             "io/github/libxposed/service/XposedService.java": """
 package io.github.libxposed.service;
 public class XposedService {
@@ -39,7 +50,11 @@ public class DisconnectTest {
   GlassSettingsBridge.connect(p->{if(p==null)lost[0]++;else bound[0]++;});
   XposedService first=new XposedService();
   XposedServiceHelper.listener.onServiceBind(first);
+  GlassSettingsBridge.syncRootGrant(new android.content.Context());
+  if(RootAccess.synced!=1)throw new AssertionError("connected service did not sync Root");
   XposedServiceHelper.listener.onServiceDied(first);
+  GlassSettingsBridge.syncRootGrant(new android.content.Context());
+  if(RootAccess.synced!=1)throw new AssertionError("dead service must not sync Root");
   if(GlassSettingsBridge.get()!=null)throw new AssertionError("dead service cached");
   if(lost[0]!=1)throw new AssertionError("view not notified");
   GlassSettingsBridge.connect(p->{if(p!=null)bound[0]++;});

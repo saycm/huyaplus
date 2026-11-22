@@ -27,6 +27,12 @@ public class View {
  public void setVisibility(int value){visibility=value;}
  public int getVisibility(){return visibility;}
  public ViewParent getParent(){return parent;}
+ public android.content.Context getContext(){return null;}
+ public <T extends View> T findViewById(int id){return null;}
+ public <T extends View> T findViewWithTag(Object tag){return null;}
+ public void setTag(Object tag){}
+ public interface OnClickListener { void onClick(View view); }
+ public void setOnClickListener(OnClickListener listener){}
  public boolean isAttachedToWindow(){return parent!=null;}
  public void addOnAttachStateChangeListener(OnAttachStateChangeListener value){listener=value;}
  public void removeOnAttachStateChangeListener(OnAttachStateChangeListener value){if(listener==value)listener=null;}

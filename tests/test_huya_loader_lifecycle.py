@@ -47,17 +47,12 @@ public class PackageInfo {public String versionName;}
 package android.content;
 import android.os.Bundle;
 public class ContentResolver {
- public static String rootStatus="granted";
  public static int rootChecks;
  public Bundle call(String authority,String method,String arg,Bundle extras){
   if(!"io.github.saycm.huyaplus.tasks".equals(authority)||!"verify_root".equals(method))
    throw new AssertionError("Unexpected provider call: "+method);
   rootChecks++;
-  if("missing".equals(rootStatus))return null;
-  if("unavailable".equals(rootStatus))throw new IllegalArgumentException("provider unavailable");
-  Bundle reply=new Bundle();
-  reply.putBoolean("root_granted","granted".equals(rootStatus));
-  return reply;
+  throw new IllegalArgumentException("provider unavailable");
  }
  public Bundle call(android.net.Uri uri,String method,String arg,Bundle extras){return null;}
 }
@@ -136,6 +131,8 @@ public abstract class XposedModule {
  public static long frameworkProperties=1L;
  public static String frameworkFailure="";
  public static int preferenceReads;
+ public static int rootReads;
+ public static String rootStatus="granted";
  public String getFrameworkName(){
   if("name".equals(frameworkFailure))throw new IllegalStateException("unavailable");
   return frameworkName;
@@ -146,6 +143,14 @@ public abstract class XposedModule {
   return frameworkProperties;
  }
  public android.content.SharedPreferences getRemotePreferences(String name){
+  if("root_access".equals(name)){
+   rootReads++;
+   if("unavailable".equals(rootStatus))throw new IllegalStateException("service unavailable");
+   if("missing".equals(rootStatus))return null;
+   return (android.content.SharedPreferences)java.lang.reflect.Proxy.newProxyInstance(
+    getClass().getClassLoader(),new Class<?>[]{android.content.SharedPreferences.class},
+    (proxy,method,args)->"root_granted".equals(args[0])&&"granted".equals(rootStatus));
+  }
   preferenceReads++;return null;
  }
  public void onModuleLoaded(ModuleLoadedParam param){}
@@ -361,7 +366,7 @@ import io.github.saycm.huyaplus.HuyaCompatEntry;
 
 public final class RootGateTest {
  public static void main(String[] args) throws Throwable {
-  ContentResolver.rootStatus=args[0];
+  XposedModule.rootStatus=args[0];
   if(args.length>1)android.content.pm.PackageManager.huyaVersion="missing".equals(args[1])?null:args[1];
   boolean supported=args.length==1||"13.5.62".equals(args[1])||"13.5.63".equals(args[1]);
   HuyaCompatEntry entry=new HuyaCompatEntry();
@@ -372,8 +377,8 @@ public final class RootGateTest {
   var chain=new LoaderLifecycleTest.ActivityChain(activity);
   XposedModule.invokeHook(onCreate,chain);
   XposedModule.invokeHook(onCreate,chain);
-  if(ContentResolver.rootChecks!=(supported?1:0))
-   throw new AssertionError("Check Root only for supported Huya");
+  if(ContentResolver.rootChecks!=0||XposedModule.rootReads!=(supported?1:0))
+   throw new AssertionError("Read saved Root once on supported Huya without starting the module app");
   boolean initialized=!((LoaderLifecycleTest.ActivityLoader)loader).requests.isEmpty();
   if(initialized!=(supported&&"granted".equals(args[0])))
    throw new AssertionError("Unexpected business hook state: "+args[0]);
@@ -817,7 +822,8 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             root_cases = [(status, version) for version in ("13.5.62", "13.5.63")
                           for status in ("granted", "denied", "missing", "unavailable")]
-            root_cases += [("granted", version) for version in ("13.5.44", "13.5.61", "13.5.64", "missing")]
+            root_cases += [("granted", version)
+                           for version in ("13.5.44", "13.5.61", "13.5.64", "missing")]
             for status, version in root_cases:
                 with self.subTest(root=status, version=version):
                     result = subprocess.run(

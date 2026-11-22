@@ -2,16 +2,18 @@ package io.github.saycm.huyaplus;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.util.Pair;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.webkit.ValueCallback;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
@@ -161,7 +163,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     String version = HuyaVersion.installed((Activity) activity);
                     if (!HuyaVersion.supports(version)) {
                         logInfo("unsupported Huya version; requires " + HuyaVersion.SUPPORTED);
-                    } else if (isRootAuthorized((Activity) activity)) {
+                    } else if (isRootAuthorized()) {
                         logInfo("module Root verified");
                         initializeHooks(activity.getClass().getClassLoader());
                     } else {
@@ -191,13 +193,12 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private boolean isRootAuthorized(Activity activity) {
+    private boolean isRootAuthorized() {
         try {
-            Bundle reply = activity.getContentResolver().call(
-                    GlassSettings.MODULE_PROVIDER, GlassSettings.VERIFY_ROOT, null, null);
-            return reply != null && reply.getBoolean(GlassSettings.ROOT_GRANTED, false);
+            SharedPreferences root = getRemotePreferences(GlassSettings.ROOT_PREFS);
+            return root != null && root.getBoolean(GlassSettings.ROOT_GRANTED, false);
         } catch (RuntimeException | LinkageError failure) {
-            logInfo("module Root verification service unavailable");
+            logInfo("LSPosed Root authorization preferences unavailable");
             return false;
         }
     }
@@ -402,6 +403,21 @@ public final class HuyaCompatEntry extends XposedModule {
 
     private void hookMinePage(ClassLoader loader) {
         try {
+            Class<?> page = loader.loadClass("com.duowan.kiwi.my.MyRecordNew");
+            Method create = page.getDeclaredMethod("onViewCreated", View.class, android.os.Bundle.class);
+            hook(create).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    addMineSettingsEntry((View) chain.getArg(0));
+                } catch (RuntimeException | LinkageError failure) {
+                    logFailure(failure);
+                }
+                return result;
+            });
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+        }
+        try {
             Class<?> creator = loader.loadClass("com.duowan.kiwi.my.utils.MyTabModuleViewCreator");
             Method render = creator.getDeclaredMethod("createByTemplateType", Context.class,
                     loader.loadClass("com.duowan.HUYA.MyTabModuleInfo"));
@@ -430,6 +446,33 @@ public final class HuyaCompatEntry extends XposedModule {
         } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
             logFailure(failure);
         }
+    }
+
+    private void addMineSettingsEntry(View root) {
+        Context context = root.getContext();
+        int panelId = context.getResources().getIdentifier("user_info_panel", "id", TARGET_PACKAGE);
+        View panel = root.findViewById(panelId);
+        if (panel == null || !(panel.getParent() instanceof LinearLayout)) return;
+        ViewGroup list = (ViewGroup) panel.getParent();
+        String label = "虎牙 Plus 设置";
+        if (list.findViewWithTag(label) != null) return;
+        Button entry = new Button(context);
+        entry.setTag(label);
+        entry.setText(label);
+        entry.setAllCaps(false);
+        entry.setOnClickListener(view -> {
+            Intent intent = new Intent().setClassName("io.github.saycm.huyaplus",
+                    "io.github.saycm.huyaplus.AppDetailActivity");
+            try {
+                context.startActivity(intent);
+            } catch (android.content.ActivityNotFoundException | SecurityException failure) {
+                Toast.makeText(context, "无法打开虎牙 Plus 设置", Toast.LENGTH_SHORT).show();
+                logFailure(failure);
+            }
+        });
+        list.addView(entry, list.indexOfChild(panel) + 1,
+                new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
     private Object filterNativeMineModule(Object module) {

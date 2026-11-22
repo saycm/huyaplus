@@ -81,8 +81,10 @@ public class Context {
  public static BroadcastReceiver receiver;
  public Context getApplicationContext(){return this;}
  public ContentResolver getContentResolver(){return new ContentResolver();}
+ public android.content.res.Resources getResources(){return null;}
  public SharedPreferences getSharedPreferences(String name,int mode){return null;}
  public ClassLoader getClassLoader(){return getClass().getClassLoader();}
+ public void startActivity(Intent intent){}
  public Intent registerReceiver(BroadcastReceiver value,IntentFilter filter){receiver=value;return null;}
  public Intent registerReceiver(BroadcastReceiver value,IntentFilter filter,int flags){receiver=value;return null;}
 }
@@ -92,6 +94,8 @@ public abstract class BroadcastReceiver {public abstract void onReceive(Context 
 ''',
     "android/content/Intent.java": '''package android.content;
 public class Intent {private final String action;public Intent(String action){this.action=action;}
+ public Intent(){this(null);}
+ public Intent setClassName(String packageName,String className){return this;}
  public String getAction(){return action;}}
 ''',
     "android/content/IntentFilter.java": '''package android.content;

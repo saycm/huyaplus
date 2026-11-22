@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit;
 final class RootAccess {
     private RootAccess() {}
 
-    static boolean wasAuthorized(Context context) {
+    static boolean verify(Context context) {
         return settings(context).getBoolean(GlassSettings.ROOT_GRANTED, false);
     }
 
@@ -22,15 +22,12 @@ final class RootAccess {
                 && granted;
     }
 
-    static boolean verify(Context context) {
-        if (!wasAuthorized(context)) return false;
-        if (checkUid(1_500)) return true;
-        settings(context).edit().remove(GlassSettings.ROOT_GRANTED).apply();
-        return false;
+    static synchronized boolean syncTo(Context context, SharedPreferences remote) {
+        return remote.edit().putBoolean(GlassSettings.ROOT_GRANTED, verify(context)).commit();
     }
 
     private static SharedPreferences settings(Context context) {
-        return context.getSharedPreferences("root_access", Context.MODE_PRIVATE);
+        return context.getSharedPreferences(GlassSettings.ROOT_PREFS, Context.MODE_PRIVATE);
     }
 
     private static boolean checkUid(long timeoutMillis) {
