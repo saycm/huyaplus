@@ -72,6 +72,12 @@
     <string name="discussion_url">https://t.me/+fFxFjUupwRllYWM1</string>
     <string name="mine_settings_title">我的页面自定义</string>
     <string name="navigation_settings_title">底栏与商城自定义</string>
+    <string name="live_menu_settings_title">直播间更多菜单</string>
+    <string name="live_menu_tools">直播工具</string>
+    <string name="live_menu_activities">活动与互动入口</string>
+    <string name="live_menu_settings_hint">开启隐藏入口，关闭显示入口。重新打开直播间「更多」查看效果。</string>
+    <string name="live_menu_sync_pending">开关已保存在本机。重新打开此页可重试同步到虎牙。</string>
+    <string name="live_menu_activity_hint">虎牙加载新活动后会登记入口。若设置中未出现，可从虎牙「我的 → 虎牙 Plus 设置」同步。</string>
     <string name="mine_settings_hint">开启开关可隐藏对应入口。重新打开虎牙后查看效果。</string>
     <string name="mine_settings_disconnected">LSPosed 未连接，连接后可以修改开关。</string>
     <string name="mine_settings_save_failed">未能保存，请检查 LSPosed 连接后重试。</string>

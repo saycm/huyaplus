@@ -38,6 +38,9 @@ public final class AppDetailActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (HuyaVersion.PACKAGE_NAME.equals(getCallingPackage())) {
+            TaskLogProvider.saveLiveMenuCatalog(this, getIntent().getBundleExtra(LiveMenu.CATALOG));
+        }
         setContentView(R.layout.activity_app_detail);
         SystemBarInsets.apply(findViewById(android.R.id.content));
 
@@ -47,6 +50,9 @@ public final class AppDetailActivity extends Activity {
         findViewById(R.id.action_navigation_settings).setOnClickListener(view ->
                 startActivity(new Intent(this, MineSettingsActivity.class)
                         .putExtra(MineSettingsActivity.SHOW_NAVIGATION, true)));
+        findViewById(R.id.action_live_menu_settings).setOnClickListener(view ->
+                startActivity(new Intent(this, MineSettingsActivity.class)
+                        .putExtra(MineSettingsActivity.SHOW_LIVE_MENU, true)));
         automation = new AutomationPanel(this, (LinearLayout) findViewById(R.id.automation_settings));
 
         String version = HuyaVersion.installed(this);

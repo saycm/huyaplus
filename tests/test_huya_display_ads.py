@@ -139,9 +139,14 @@ import com.duowan.biz.util.OrientationData;
 public class InputEntryData {
  private final String title;
  private final OrientationData actionUrl;
- public InputEntryData(String title,OrientationData actionUrl){this.title=title;this.actionUrl=actionUrl;}
+ private final int type;
+ public InputEntryData(String title,OrientationData actionUrl){this(title,actionUrl,0);}
+ public InputEntryData(String title,OrientationData actionUrl,int type){
+  this.title=title;this.actionUrl=actionUrl;this.type=type;
+ }
  public String getTitle(){return title;}
  public OrientationData getActionUrl(){return actionUrl;}
+ public int getType(){return type;}
 }
 """,
     "com/duowan/kiwi/inputbar/api/view/entryview/base/BottomBarEntryListView.java": """
@@ -156,6 +161,7 @@ public class BottomBarEntryListView {
 package com.duowan.HUYA;
 public class ActCommEnt {
  public int iEntId;
+ public int iType;
  public String sFullUrl;
  public ActCommEnt(int id){iEntId=id;}
 }
@@ -530,10 +536,19 @@ public class DisplayAdsTest {
    cardCampaign.sFullUrl="https://hd.huya.com/hyfe/revenue-business/cards-pot.html?source=live";
    call(manager,"createFloatWindowItemView",types,null,null,cardCampaign,0,false);
    check(manager.attachedCards==0,"Known promotions and card collection must not attach floating cards");
+   ActCommEnt pushedActivity=new ActCommEnt(8675309);
+   pushedActivity.iType=2;
+   for(boolean landscape:new boolean[]{false,true}){
+    call(manager,"createFloatWindowItemView",types,null,null,pushedActivity,0,landscape);
+   }
+   check(manager.attachedCards==0,"An unfamiliar server-pushed floating activity must not attach");
+   call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),pushedActivity,0,false);
+   check(manager.attachedCards==1,"An already opened mini app can still be minimized");
+   call(manager,"createFloatWindowItemView",types,null,null,new ActCommEnt(999),0,false);
    for(ActCommEnt item:new ActCommEnt[]{new ActCommEnt(0),new ActCommEnt(999),null}){
     call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),item,0,false);
    }
-   check(manager.attachedCards==3,"Other entrance IDs and null must retain original handling");
+   check(manager.attachedCards==5,"Other entry types and null must retain original handling");
   }else if(args[0].equals("live-campaign-shortcuts")){
    UniversalComponentNavigationView nav=new UniversalComponentNavigationView();
    Class<?>[] types={List.class};
@@ -557,16 +572,24 @@ public class DisplayAdsTest {
    check(nav.items==null,"Null must use Huya's normal reset");
   }else if(args[0].equals("live-input-campaign-shortcuts")){
    BottomBarEntryListView bar=new BottomBarEntryListView();
-   InputEntryData gift=new InputEntryData("礼物",null);
+   InputEntryData gift=new InputEntryData("礼物",null,1);
+   InputEntryData fans=new InputEntryData("粉丝团",null,7);
    InputEntryData cards=new InputEntryData("集卡领虎牙币",null);
    InputEntryData cardsByRoute=new InputEntryData("活动",new OrientationData(
     null,"https://hd.huya.com/hyfe/revenue-business/cards-pot.html"));
    InputEntryData other=new InputEntryData("AI工坊",new OrientationData(
     "https://hd.huya.com/hyfe/AI-gift-202605/index.html",null));
-   List<?> input=Collections.unmodifiableList(Arrays.asList(gift,cards,other,cardsByRoute));
+   InputEntryData commercial=new InputEntryData("新活动",null,3);
+   InputEntryData game=new InputEntryData("",null,4);
+   InputEntryData hotPlay=new InputEntryData("守护幸运抽",null,10);
+   InputEntryData newHotPlay=new InputEntryData("",null,10);
+   List<?> input=Collections.unmodifiableList(Arrays.asList(
+    gift,cards,other,cardsByRoute,game,hotPlay,fans,commercial,newHotPlay));
    call(bar,"refreshAllEntryView",new Class<?>[]{List.class},input);
-   check(bar.items.equals(Arrays.asList(gift,other)),"Input bar must preserve gift and unrelated entries");
-   check(input.size()==4,"Input bar filtering must preserve the caller's list");
+   check(bar.items.equals(Arrays.asList(gift,other,fans)),"Remove promotion types and preserve unrelated entries");
+   check(input.size()==9,"Input bar filtering must preserve the caller's list");
+   call(bar,"refreshAllEntryView",new Class<?>[]{List.class},Arrays.asList(game,commercial,newHotPlay));
+   check(bar.items.isEmpty(),"A promotion-only refresh must clear old input entries");
   }else if(args[0].equals("live-promotion-banners")){
    UniversalLiveBannerView banner=new UniversalLiveBannerView();
    banner.setData(Arrays.asList("old promotion"));

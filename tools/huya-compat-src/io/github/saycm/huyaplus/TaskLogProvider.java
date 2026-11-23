@@ -2,6 +2,8 @@ package io.github.saycm.huyaplus;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
@@ -51,6 +53,12 @@ public final class TaskLogProvider extends ContentProvider {
         String[] callers = getContext().getPackageManager().getPackagesForUid(Binder.getCallingUid());
         boolean huya = callers != null && Arrays.asList(callers).contains("com.duowan.kiwi");
         if (!owner && !huya) throw new SecurityException("Caller is not allowed");
+        if (LiveMenu.REGISTER.equals(method)) {
+            if (!huya) throw new SecurityException("Only Huya can register live-room menu entries");
+            if (extras == null || extras.size() > 300) throw new IllegalArgumentException("Invalid live menu");
+            saveLiveMenuCatalog(getContext(), extras);
+            return new Bundle();
+        }
         SQLiteDatabase db = helper.getWritableDatabase();
         Bundle result = new Bundle();
         if ("import".equals(method)) {
@@ -158,6 +166,19 @@ public final class TaskLogProvider extends ContentProvider {
 
     private static String bounded(String value) {
         return value.substring(0, Math.min(value.length(), 400));
+    }
+
+    static void saveLiveMenuCatalog(Context context, Bundle entries) {
+        if (entries == null || entries.isEmpty()) return;
+        SharedPreferences.Editor catalog = context.getSharedPreferences(LiveMenu.CATALOG, Context.MODE_PRIVATE).edit();
+        for (String key : entries.keySet()) {
+            if (!LiveMenu.isActivityKey(key)) continue;
+            String title = entries.getString(key, "").trim();
+            if (!title.isEmpty() && title.length() <= LiveMenu.MAX_TITLE_LENGTH) {
+                catalog.putString(key, title);
+            }
+        }
+        catalog.apply();
     }
 
     @Override public Cursor query(Uri uri, String[] p, String s, String[] a, String o) {

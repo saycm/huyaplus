@@ -17,6 +17,7 @@ package android.app;
 public class Activity {
  public void onCreate(android.os.Bundle state){}
  public void onResume(){}
+ public void startActivityForResult(android.content.Intent intent,int requestCode){}
  public boolean isFinishing(){return false;}
  public boolean isDestroyed(){return false;}
  public boolean hasWindowFocus(){return true;}
@@ -65,7 +66,11 @@ public class Bundle {
  public boolean getBoolean(String key){return Boolean.TRUE.equals(values.get(key));}
  public boolean getBoolean(String key,boolean fallback){return (Boolean)values.getOrDefault(key,fallback);}
  public void putString(String key,String value){values.put(key,value);}
+ public String getString(String key){return getString(key,null);}
  public String getString(String key,String fallback){return (String)values.getOrDefault(key,fallback);}
+ public java.util.Set<String> keySet(){return values.keySet();}
+ public int size(){return values.size();}
+ public boolean isEmpty(){return values.isEmpty();}
  public void putLong(String key,long value){values.put(key,value);}
  public long getLong(String key){return (Long)values.getOrDefault(key,0L);}
  public void putInt(String key,int value){values.put(key,value);}
@@ -741,7 +746,7 @@ public class DefaultQualityHookTest {
 
 QUALITY_SOURCES["RootGateTest.java"] = SOURCES.pop("RootGateTest.java")
 
-for automation_class in ("DailyAutomation", "TaskLogProvider", "RootAccess", "AutomationRules", "LocalTaskStore",
+for automation_class in ("DailyAutomation", "TaskLogProvider", "LiveMenu", "RootAccess", "AutomationRules", "LocalTaskStore",
                          "NativeTaskAutomation", "NativeTaskRunner", "NativeTaskCatalog", "TaskWire", "HuyaTaskClient",
                          "DiceTaskRunner", "DiceTaskCatalog", "DiceMissionRunner", "WelfareSignRunner",
                          "HuyaComponents", "HuyaVersion"):

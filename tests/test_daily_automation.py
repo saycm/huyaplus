@@ -17,7 +17,11 @@ public class Uri {public static Uri parse(String value){return new Uri();}}
 import java.util.*;
 public class Bundle {
  private final Map<String,Object> values=new HashMap<>();
+ public boolean isEmpty(){return values.isEmpty();}
+ public int size(){return values.size();}
+ public Set<String> keySet(){return values.keySet();}
  public void putString(String key,String value){values.put(key,value);}
+ public String getString(String key){return getString(key,null);}
  public String getString(String key,String fallback){return (String)values.getOrDefault(key,fallback);}
  public void putBoolean(String key,boolean value){values.put(key,value);}
  public boolean getBoolean(String key,boolean fallback){return (Boolean)values.getOrDefault(key,fallback);}
@@ -27,10 +31,12 @@ public class Bundle {
  public java.util.ArrayList getParcelableArrayList(String key){return (java.util.ArrayList)values.get(key);}
 }
 ''',
-    # Only the URI constant is required by the engine. The actual provider is
-    # separately checked on device for UID access control and persistence.
+    # Provider persistence is outside the daily engine harness.
     "io/github/saycm/huyaplus/TaskLogProvider.java": '''package io.github.saycm.huyaplus;
-public class TaskLogProvider {public static final android.net.Uri URI=android.net.Uri.parse("tasks");}
+public class TaskLogProvider {
+ public static final android.net.Uri URI=android.net.Uri.parse("tasks");
+ public static void saveLiveMenuCatalog(android.content.Context context,android.os.Bundle entries){}
+}
 ''',
     "android/os/Looper.java": '''package android.os;
 public class Looper {public static Looper getMainLooper(){return new Looper();}}
@@ -96,6 +102,7 @@ public abstract class BroadcastReceiver {public abstract void onReceive(Context 
 public class Intent {private final String action;public Intent(String action){this.action=action;}
  public Intent(){this(null);}
  public Intent setClassName(String packageName,String className){return this;}
+ public Intent putExtra(String key,android.os.Bundle value){return this;}
  public String getAction(){return action;}}
 ''',
     "android/content/IntentFilter.java": '''package android.content;

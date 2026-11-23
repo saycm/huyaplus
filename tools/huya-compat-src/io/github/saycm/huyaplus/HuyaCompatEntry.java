@@ -2,11 +2,14 @@ package io.github.saycm.huyaplus;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.util.Pair;
 import android.view.View;
@@ -31,6 +34,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -105,6 +110,9 @@ public final class HuyaCompatEntry extends XposedModule {
     private Toast qualityNotice;
     private final Map<Object, GlassSettings.NavigationEntry> navigationItems = new WeakHashMap<>();
     private final Map<View, Integer> hiddenNavigationViews = new WeakHashMap<>();
+    private final ExecutorService liveMenuCatalogWriter = Executors.newSingleThreadExecutor();
+    private final Map<String, String> publishedLiveMenuCatalog = new HashMap<>();
+    private long nextLiveMenuCatalogSync;
     private boolean hooksInitialized;
     private boolean activityLoaderHookInstalled;
     private boolean activationChecked;
@@ -213,6 +221,7 @@ public final class HuyaCompatEntry extends XposedModule {
         hookMinePage(classLoader);
         hookNavigationVisibility(classLoader);
         hookMallAiFloat(classLoader);
+        hookLiveMenu(classLoader);
         boolean ads = isEnabled(GlassSettings.KEY_ADS);
         boolean liveCards = isEnabled(GlassSettings.KEY_LIVE_CARDS);
         boolean rewards = isEnabled(GlassSettings.KEY_REWARDS);
@@ -248,6 +257,117 @@ public final class HuyaCompatEntry extends XposedModule {
         if (vip4k) {
             hookVip4KPlayback(classLoader);
         }
+    }
+
+    private void hookLiveMenu(ClassLoader loader) {
+        String setting = "com.duowan.kiwi.universal.live.setting.";
+        try {
+            Class<?> helper = loader.loadClass(setting + "UniversalSettingHelper");
+            Class<?> itemType = loader.loadClass(setting + "UniversalSettingItemEntity");
+            Method type = itemType.getMethod("getType");
+            Method items = helper.getDeclaredMethod("getSettingItem",
+                    loader.loadClass("androidx.fragment.app.FragmentActivity"));
+            hook(items).intercept(chain -> {
+                Object result = chain.proceed();
+                if (!(result instanceof List)) return result;
+                return LiveMenu.filter((List<?>) result, item -> {
+                    try {
+                        Object value = type.invoke(item);
+                        return value instanceof Enum ? LiveMenu.toolKey(((Enum<?>) value).name()) : null;
+                    } catch (ReflectiveOperationException ignored) {
+                        return null;
+                    }
+                }, this::isLiveMenuHidden);
+            });
+            logInfo("hooked live-room menu tools");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+        try {
+            Class<?> fragment = loader.loadClass(setting + "UniversalSettingFragment");
+            Class<?> itemType = loader.loadClass(setting + "UniversalSettingInteractData");
+            Method activity = fragment.getSuperclass().getDeclaredMethod("getActivity");
+            activity.setAccessible(true);
+            Method componentId = itemType.getMethod("getComponentId");
+            Method title = itemType.getMethod("getTitle");
+            Method combine = fragment.getDeclaredMethod("combineCompsDataWithInsertData", List.class);
+            hook(combine).intercept(chain -> {
+                Object result = chain.proceed();
+                if (!(result instanceof List)) return result;
+                Map<String, String> catalog = new LinkedHashMap<>();
+                List<?> visible = LiveMenu.filter((List<?>) result, item -> {
+                    try {
+                        int id = (int) componentId.invoke(item);
+                        String label = text(title.invoke(item)).trim();
+                        String key = LiveMenu.activityKey(id, label);
+                        if (key == null) return null;
+                        String displayedTitle = label.isEmpty() ? "组件 " + id : label;
+                        String titleKey = LiveMenu.activityTitleKey(displayedTitle);
+                        catalog.put(key, displayedTitle);
+                        catalog.put(titleKey, displayedTitle);
+                        return LiveMenu.resolveActivitySetting(key, displayedTitle,
+                                settingKey -> prefs != null && prefs.contains(settingKey));
+                    } catch (ReflectiveOperationException ignored) {
+                        return null;
+                    }
+                }, this::isLiveMenuHidden);
+                if (!catalog.isEmpty()) {
+                    try {
+                        Object host = activity.invoke(chain.getThisObject());
+                        if (host instanceof Activity) {
+                            registerLiveMenu(((Activity) host).getApplicationContext(), catalog);
+                        }
+                    } catch (ReflectiveOperationException failure) {
+                        logFailure(failure);
+                    }
+                }
+                return visible;
+            });
+            logInfo("hooked live-room menu activities");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private boolean isLiveMenuHidden(String key) {
+        return prefs != null && prefs.getBoolean(key, false);
+    }
+
+    private void registerLiveMenu(Context context, Map<String, String> catalog) {
+        liveMenuCatalogWriter.execute(() -> {
+            SharedPreferences local = context.getSharedPreferences(LiveMenu.CATALOG, Context.MODE_PRIVATE);
+            Bundle changes = new Bundle();
+            for (Map.Entry<String, String> entry : catalog.entrySet()) {
+                String label = entry.getValue();
+                label = label.substring(0, Math.min(label.length(), LiveMenu.MAX_TITLE_LENGTH));
+                if (!label.equals(local.getString(entry.getKey(), ""))) {
+                    changes.putString(entry.getKey(), label);
+                }
+            }
+            TaskLogProvider.saveLiveMenuCatalog(context, changes);
+            long now = SystemClock.elapsedRealtime();
+            if (now < nextLiveMenuCatalogSync) return;
+            Bundle pending = new Bundle();
+            for (Map.Entry<String, ?> entry : local.getAll().entrySet()) {
+                if (!(entry.getValue() instanceof String)) continue;
+                String label = (String) entry.getValue();
+                if (!label.equals(publishedLiveMenuCatalog.get(entry.getKey()))) {
+                    pending.putString(entry.getKey(), label);
+                    if (pending.size() == 300) break;
+                }
+            }
+            if (pending.isEmpty()) return;
+            try {
+                Bundle result = context.getContentResolver().call(TaskLogProvider.URI, LiveMenu.REGISTER, null, pending);
+                if (result != null) {
+                    for (String key : pending.keySet()) publishedLiveMenuCatalog.put(key, pending.getString(key));
+                    return;
+                }
+            } catch (RuntimeException failure) {
+                Log.i(TAG, "Live-room menu catalog saved for the Huya Plus settings shortcut");
+            }
+            nextLiveMenuCatalogSync = now + TimeUnit.SECONDS.toMillis(15);
+        });
     }
 
     private void hookTaskCenterPromotions(ClassLoader loader) {
@@ -464,7 +584,23 @@ public final class HuyaCompatEntry extends XposedModule {
             Intent intent = new Intent().setClassName("io.github.saycm.huyaplus",
                     "io.github.saycm.huyaplus.AppDetailActivity");
             try {
-                context.startActivity(intent);
+                Object host = context;
+                while (host instanceof ContextWrapper && !(host instanceof Activity)) {
+                    host = ((ContextWrapper) host).getBaseContext();
+                }
+                if (host instanceof Activity) {
+                    Bundle catalog = new Bundle();
+                    for (Map.Entry<String, ?> item :
+                            context.getSharedPreferences(LiveMenu.CATALOG, Context.MODE_PRIVATE).getAll().entrySet()) {
+                        if (item.getValue() instanceof String) {
+                            catalog.putString(item.getKey(), (String) item.getValue());
+                        }
+                    }
+                    intent.putExtra(LiveMenu.CATALOG, catalog);
+                    ((Activity) host).startActivityForResult(intent, 0);
+                } else {
+                    context.startActivity(intent);
+                }
             } catch (android.content.ActivityNotFoundException | SecurityException failure) {
                 Toast.makeText(context, "无法打开虎牙 Plus 设置", Toast.LENGTH_SHORT).show();
                 logFailure(failure);
@@ -1174,6 +1310,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.inputbar.api.view.entryview.base.BottomBarEntryListView");
             Class<?> itemType = classLoader.loadClass(
                     "com.duowan.kiwi.inputbar.api.view.InputEntryData");
+            Method entryType = itemType.getMethod("getType");
             Method title = itemType.getMethod("getTitle");
             Method actionUrl = itemType.getMethod("getActionUrl");
             Method portrait = actionUrl.getReturnType().getMethod("getPortrait");
@@ -1183,6 +1320,11 @@ public final class HuyaCompatEntry extends XposedModule {
                     return false;
                 }
                 try {
+                    int type = (int) entryType.invoke(item);
+                    // InputEntryType.Commercial, Game and HotPlay.
+                    if (type == 3 || type == 4 || type == 10) {
+                        return true;
+                    }
                     Object route = actionUrl.invoke(item);
                     return isCampaignShortcutName(title.invoke(item))
                             || (route != null && (isCampaignShortcutRoute(portrait.invoke(route))
@@ -1226,6 +1368,12 @@ public final class HuyaCompatEntry extends XposedModule {
             if (create != null) {
                 hook(create).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object entry = chain.getArg(2);
+                    // The activity list supplies type 2 entries with no opened mini-app.
+                    if (chain.getArg(1) == null && (Integer.valueOf(2).equals(field(entry, "iType"))
+                            || isCampaignShortcutName(field(entry, "sName")))) {
+                        logInfo("blocked server-pushed live-room activity window");
+                        return null;
+                    }
                     Object id = field(entry, "iEntId");
                     // Huya's gift offer, game promotion and shopping activity windows.
                     if (Integer.valueOf(317).equals(id) || Integer.valueOf(201).equals(id)
@@ -1281,14 +1429,14 @@ public final class HuyaCompatEntry extends XposedModule {
             if (!filtered.removeIf(isCampaign)) {
                 return chain.proceed();
             }
-            logInfo("filtered card collection or phone draw shortcut via " + refresh.getName());
+            logInfo("filtered live-room promotion entries via " + refresh.getName());
             return chain.proceed(new Object[]{filtered});
         });
     }
 
     private static boolean isCampaignShortcutName(Object name) {
         return "抽手机".equals(name) || "集卡".equals(name) || "集卡领虎牙币".equals(name)
-                || "集五卡·瓜分10万奖金".equals(name);
+                || "集五卡·瓜分10万奖金".equals(name) || "守护幸运抽".equals(name);
     }
 
     private static boolean isCampaignShortcutRoute(Object value) {
