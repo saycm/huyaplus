@@ -1,11 +1,16 @@
 package io.github.saycm.huyaplus;
 
+import java.util.HashSet;
+import java.util.Set;
+
 final class QualitySession {
     private static final int MAX_ATTEMPTS = 5;
     private int generation;
     private int attempts;
     private boolean finished;
     private boolean queued;
+    private boolean switching;
+    private final Set<Integer> rejectedRates = new HashSet<>();
     private boolean noticeShown;
     private long noticeAfter;
     private long room;
@@ -31,6 +36,8 @@ final class QualitySession {
         attempts = 0;
         finished = false;
         queued = false;
+        switching = false;
+        rejectedRates.clear();
         noticeShown = false;
         noticeAfter = Long.MIN_VALUE;
         return ++generation;
@@ -45,7 +52,7 @@ final class QualitySession {
     }
 
     synchronized boolean queue(int token) {
-        if (!pending(token) || queued || attempts >= MAX_ATTEMPTS) return false;
+        if (!pending(token) || queued || switching || attempts >= MAX_ATTEMPTS) return false;
         queued = true;
         return true;
     }
@@ -63,11 +70,27 @@ final class QualitySession {
     synchronized boolean claim(int token) {
         if (!pending(token)) return false;
         finished = true;
+        switching = false;
         return true;
     }
 
     synchronized void manualSelection() {
         finished = true;
+        switching = false;
+    }
+
+    synchronized void startSwitch(int token) {
+        if (pending(token)) switching = true;
+    }
+
+    synchronized void endSwitch(int token, int rejectedRate) {
+        if (!pending(token)) return;
+        switching = false;
+        if (rejectedRate >= 0) rejectedRates.add(rejectedRate);
+    }
+
+    synchronized boolean rejected(int token, int bitrate) {
+        return token == generation && rejectedRates.contains(bitrate);
     }
 
     synchronized void deferNotice(int token, long time) {
@@ -79,7 +102,7 @@ final class QualitySession {
     }
 
     synchronized boolean noticeReady(int token, long now) {
-        return noticePending(token) && !queued && now >= noticeAfter;
+        return noticePending(token) && !queued && !switching && now >= noticeAfter;
     }
 
     synchronized boolean claimNotice(int token, long now) {

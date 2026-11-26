@@ -27,6 +27,7 @@ public final class Handler {
  public Handler(Looper looper){}
  public boolean post(Runnable callback){return postDelayed(callback,0);}
  public boolean postDelayed(Runnable callback,long delay){pending.add(callback);return true;}
+ public void removeCallbacks(Runnable callback){pending.remove(callback);}
  public static void drain(){
   List<Runnable> callbacks=new ArrayList<>(pending);pending.clear();
   for(Runnable callback:callbacks)callback.run();
@@ -112,6 +113,15 @@ public final class MiniappRewardsTest {
    map.put(idKey,id);params=map;
   }
   HuyaCompatEntry entry=new HuyaCompatEntry();
+  boolean filterBanner=args.length==3||Boolean.parseBoolean(args[3]);
+  if(args.length==5){
+   Map<String,Boolean> settings=Map.of("ads",filterBanner,"rewards",Boolean.valueOf(args[4]));
+   Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+   prefs.setAccessible(true);
+   prefs.set(entry,Proxy.newProxyInstance(MiniappRewardsTest.class.getClassLoader(),
+    new Class<?>[]{android.content.SharedPreferences.class},
+    (proxy,method,values)->settings.getOrDefault(values[0],(Boolean)values[1])));
+  }
   Method initialize=HuyaCompatEntry.class.getDeclaredMethod("initializeHooks",ClassLoader.class);
   initialize.setAccessible(true);initialize.invoke(entry,MiniappRewardsTest.class.getClassLoader());
   HyExtAd module=new HyExtAd();
@@ -119,10 +129,11 @@ public final class MiniappRewardsTest {
   XposedModule.call(module,methodName,new Class<?>[]{Object.class,JsCallback.class},params,callback);
   boolean valid=params!=null&&id instanceof String&&!((String)id).isEmpty();
   if(banner){
-   check(com.huya.kiwi.hyext.impl.utils.HyExtAdManager.displays==0,
-    "The mini-game banner must not be mounted");
-   check(module.adOpens==0,"The original banner display must not run");
-   check(callback.calls==1,"Hiding the banner must complete the show callback");
+   int expectedDisplays=filterBanner?0:1;
+   check(com.huya.kiwi.hyext.impl.utils.HyExtAdManager.displays==expectedDisplays,
+    "The mini-game banner must follow the display ad switch");
+   check(module.adOpens==expectedDisplays,"The original display must follow the display ad switch");
+   if(filterBanner)check(callback.calls==1,"Hiding the banner must complete the show callback");
    check(Handler.pending.isEmpty(),"Hiding the banner must not grant a reward");
    check(module.events.isEmpty(),"Hiding the banner must not dispatch a reward");
   }else if(valid){
@@ -193,7 +204,10 @@ class HuyaMiniappRewardsTest(unittest.TestCase):
                 self.run_case("custom", params, "valid")
 
     def test_custom_game_banner_is_not_mounted(self):
-        self.run_case("banner", "map", "valid")
+        for ads in ("false", "true"):
+            for rewards in ("false", "true"):
+                with self.subTest(ads=ads, rewards=rewards):
+                    self.run_case("banner", "map", "valid", ads, rewards)
 
     def test_rewarded_video_accepts_game_map_parameters(self):
         self.run_case("rewarded", "map", "valid")

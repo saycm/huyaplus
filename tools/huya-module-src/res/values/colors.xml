@@ -5,6 +5,13 @@
     <color name="glass_text">#2A2D3D</color>
     <color name="glass_secondary">#7C7F92</color>
     <color name="huya_accent">#7C6AF0</color>
+    <color name="live_glass_text">#F7F8FC</color>
+    <color name="live_glass_secondary">#CCD0DD</color>
+    <color name="live_glass_accent">#C2B5FF</color>
+    <color name="live_glass_thumb">#D4D6DF</color>
+    <color name="live_glass_track">#45FFFFFF</color>
+    <color name="live_glass_thumb_checked">#FFFFFF</color>
+    <color name="live_glass_track_checked">#B07C6AF0</color>
     <color name="warning_amber">#F59E0B</color>
     <color name="success_green">#34C88A</color>
     <color name="avatar_start">#B9A9FF</color>

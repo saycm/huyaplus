@@ -12,16 +12,20 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.Process;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 
 public final class TaskLogProvider extends ContentProvider {
     public static final Uri URI = Uri.parse("content://" + GlassSettings.MODULE_PROVIDER);
+    static final Uri TASKS_URI = URI.buildUpon().appendPath("tasks").build();
+    private static final ZoneId TASK_ZONE = ZoneId.of("Asia/Shanghai");
     private SQLiteOpenHelper helper;
 
     @Override
     public boolean onCreate() {
-        helper = new SQLiteOpenHelper(getContext(), "daily_tasks.db", null, 5) {
+        helper = new SQLiteOpenHelper(getContext(), "daily_tasks.db", null, 6) {
             @Override public void onCreate(SQLiteDatabase db) {
                 db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                         + "time INTEGER NOT NULL, task TEXT NOT NULL, target TEXT NOT NULL, "
@@ -35,8 +39,7 @@ public final class TaskLogProvider extends ContentProvider {
                     db.execSQL("CREATE UNIQUE INDEX events_origin ON events(origin)");
                 }
                 if (oldVersion < 3) createTasks(db);
-                if (oldVersion < 4) db.delete("tasks", null, null);
-                else if (oldVersion < 5) db.delete("tasks", "task_key LIKE ?", new String[]{"dice/%"});
+                if (oldVersion < 6) db.delete("tasks", null, null);
             }
             private void createTasks(SQLiteDatabase db) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS tasks (task_key TEXT PRIMARY KEY, "
@@ -117,6 +120,7 @@ public final class TaskLogProvider extends ContentProvider {
             }
             getContext().getSharedPreferences("task_log_display", 0).edit()
                     .putLong("last_tasks_sync", System.currentTimeMillis()).apply();
+            getContext().getContentResolver().notifyChange(TASKS_URI, null);
         } else if ("read".equals(method)) {
             if (!owner) throw new SecurityException("Only module can read logs");
             ArrayList<Bundle> entries = new ArrayList<>();
@@ -138,8 +142,11 @@ public final class TaskLogProvider extends ContentProvider {
         } else if ("read_tasks".equals(method)) {
             if (!owner) throw new SecurityException("Only module can read task catalog");
             ArrayList<Bundle> entries = new ArrayList<>();
+            LocalDate today = LocalDate.now(TASK_ZONE);
             try (Cursor rows = db.rawQuery("SELECT task_key, title, status, detail, updated "
-                    + "FROM tasks ORDER BY sort_order", null)) {
+                    + "FROM tasks WHERE updated >= ? AND updated < ? ORDER BY sort_order", new String[]{
+                    Long.toString(today.atStartOfDay(TASK_ZONE).toInstant().toEpochMilli()),
+                    Long.toString(today.plusDays(1).atStartOfDay(TASK_ZONE).toInstant().toEpochMilli())})) {
                 while (rows.moveToNext()) {
                     Bundle entry = new Bundle();
                     entry.putString("key", rows.getString(0));

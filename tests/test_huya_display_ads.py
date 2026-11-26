@@ -1,14 +1,23 @@
 """Exercise the real hooks against the display-ad interfaces found in Huya."""
+import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 from test_huya_loader_lifecycle import JDK, ROOT, SDK, SOURCES
+from test_navigation_visibility import FIXTURES as NAVIGATION_FIXTURES
 
 
 DISPLAY_SOURCES = dict(SOURCES)
+DISPLAY_SOURCES.update({name: NAVIGATION_FIXTURES[name] for name in (
+    "android/content/res/Configuration.java",
+    "android/content/res/Resources.java",
+    "android/view/View.java",
+)})
 DISPLAY_SOURCES.update({
     "com/duowan/kiwi/livead/api/adplugin/event/IPresenterAdEvent.java": """
 package com.duowan.kiwi.livead.api.adplugin.event;
@@ -105,15 +114,38 @@ public class UniversalTaskBannerView {
 """,
     "com/duowan/kiwi/interaction/api/data/ComponentPanelItemInfo.java": """
 package com.duowan.kiwi.interaction.api.data;
+import com.duowan.HUYA.interactiveComInfo;
 public class ComponentPanelItemInfo {
  private final int id;
  private final String name, route;
+ public final interactiveComInfo info=new interactiveComInfo();
  public ComponentPanelItemInfo(int id,String name,String route){
   this.id=id;this.name=name;this.route=route;
  }
  public int getComponentId(){return id;}
  public String getComponentName(){return name;}
  public String getJumpUrl(boolean landscape){return landscape?null:route;}
+ public interactiveComInfo getInteractiveComInfo(){return info;}
+}
+""",
+    "com/duowan/HUYA/interactiveComInfo.java": """
+package com.duowan.HUYA;
+public class interactiveComInfo {
+ public interactiveComInfoReminder tReminderInfo;
+}
+""",
+    "com/duowan/HUYA/interactiveComInfoReminder.java": """
+package com.duowan.HUYA;
+public class interactiveComInfoReminder {
+ public int iState;
+ public String sButton;
+}
+""",
+    "com/duowan/kiwi/livehighlightmark/impl/view/HighlightMarkView.java": """
+package com.duowan.kiwi.livehighlightmark.impl.view;
+public class HighlightMarkView extends android.view.View {
+ public boolean containerVisible=true;
+ public void setVisible(boolean visible){containerVisible=visible;}
 }
 """,
     "com/duowan/kiwi/interaction/impl/view/UniversalComponentNavigationView.java": """
@@ -121,7 +153,10 @@ package com.duowan.kiwi.interaction.impl.view;
 import java.util.List;
 public class UniversalComponentNavigationView {
  public List<?> items;
+ public boolean landscape;
+ public boolean isLandscape(){return landscape;}
  public void setAllTimeLimitComps(List<?> items){this.items=items;}
+ public void setComponentData(List<?> items){this.items=items;}
 }
 """,
     "com/duowan/biz/util/OrientationData.java": """
@@ -162,6 +197,7 @@ package com.duowan.HUYA;
 public class ActCommEnt {
  public int iEntId;
  public int iType;
+ public String sName;
  public String sFullUrl;
  public ActCommEnt(int id){iEntId=id;}
 }
@@ -271,6 +307,42 @@ public class BaseRecommendPresenter {
  }
 }
 """,
+    "com/duowan/kiwi/listframe/RefreshListener.java": """
+package com.duowan.kiwi.listframe;
+public interface RefreshListener { enum RefreshMode { REPLACE_ALL, APPEND } }
+""",
+    "com/duowan/kiwi/list/homepage/tab/recommend/BaseRecommendFragment.java": """
+package com.duowan.kiwi.list.homepage.tab.recommend;
+import com.duowan.kiwi.listframe.RefreshListener.RefreshMode;
+import java.util.List;
+public class BaseRecommendFragment {
+ public List<?> items;
+ public boolean endRefresh(List<?> rows,RefreshMode mode,int total){items=rows;return true;}
+}
+""",
+    "com/duowan/kiwi/list/homepage/tab/recommend/GameRecommendFragment.java": """
+package com.duowan.kiwi.list.homepage.tab.recommend;
+import com.duowan.kiwi.listframe.RefreshListener.RefreshMode;
+import java.util.List;
+public class GameRecommendFragment extends BaseRecommendFragment {
+ public boolean endRefresh(List<?> rows,RefreshMode mode,int total){return super.endRefresh(rows,mode,total);}
+}
+""",
+    "com/duowan/kiwi/list/vo/lizard/LZCategoryViewObject.java": """
+package com.duowan.kiwi.list.vo.lizard;
+public class LZCategoryViewObject {
+ private final Object mUserRecItem;
+ public LZCategoryViewObject(Object item){mUserRecItem=item;}
+ public Object getUserRecItem(){return mUserRecItem;}
+}
+""",
+    "com/duowan/kiwi/list/vo/LiveGridViewObject.java": """
+package com.duowan.kiwi.list.vo;
+public class LiveGridViewObject {
+ public final Object userRecItem;
+ public LiveGridViewObject(Object item){userRecItem=item;}
+}
+""",
     "com/duowan/kiwi/immersepage/api/data/ImmerseItemType.java": """
 package com.duowan.kiwi.immersepage.api.data;
 public enum ImmerseItemType {
@@ -368,6 +440,11 @@ import com.duowan.kiwi.interaction.impl.view.UniversalComponentNavigationView;
 import com.duowan.biz.util.OrientationData;
 import com.duowan.kiwi.inputbar.api.view.InputEntryData;
 import com.duowan.kiwi.inputbar.api.view.entryview.base.BottomBarEntryListView;
+import com.duowan.kiwi.list.homepage.tab.recommend.BaseRecommendFragment;
+import com.duowan.kiwi.list.homepage.tab.recommend.GameRecommendFragment;
+import com.duowan.kiwi.list.vo.LiveGridViewObject;
+import com.duowan.kiwi.list.vo.lizard.LZCategoryViewObject;
+import com.duowan.kiwi.listframe.RefreshListener.RefreshMode;
 public class DisplayAdsTest {
  static final class Param implements XposedModule.PackageReadyParam {
   final ClassLoader loader;
@@ -379,10 +456,15 @@ public class DisplayAdsTest {
  public static class Card {
   public int iCardType;
   public List<Object> vAdCard=new ArrayList<>();
+  public List<Object> vMomentCard=new ArrayList<>();
  }
  public static class User {
   public Card tMCard;
+  public int iViewType;
   public String sTitle="normal live";
+ }
+ public static class Moment {
+  public Object tVideoInfo=new Object();
  }
  public static class Grid {
   public User userRecItem;
@@ -416,6 +498,16 @@ public class DisplayAdsTest {
   public Object proceed(){return null;}
   public Object proceed(Object[] args){return null;}
  }
+ static final class CtorChain implements XposedModule.Chain {
+  final Object target;
+  CtorChain(Object target){this.target=target;}
+  public java.lang.reflect.Executable getExecutable(){return null;}
+  public Object getThisObject(){return target;}
+  public List<Object> getArgs(){return Collections.emptyList();}
+  public Object getArg(int index){throw new IndexOutOfBoundsException();}
+  public Object proceed(){return null;}
+  public Object proceed(Object[] args){return null;}
+ }
  public static void main(String[] args) throws Throwable {
   HuyaCompatEntry entry=new HuyaCompatEntry();
   ClassLoader loader=DisplayAdsTest.class.getClassLoader();
@@ -423,6 +515,22 @@ public class DisplayAdsTest {
   if(args[0].equals("native-live-ads")&&args.length==3){
    Map<String,Boolean> settings=Map.of("live_ad_banner",Boolean.valueOf(args[1]),
      "live_ad_float",Boolean.valueOf(args[2]),"ads",false,"live_cards",false);
+   Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+   prefs.setAccessible(true);
+   prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
+    (proxy,method,values)->settings.getOrDefault(values[0],(Boolean)values[1])));
+  }
+  if(args[0].equals("live-landscape-reward-shortcuts")){
+   Map<String,Boolean> settings=Map.of("live_cards",Boolean.valueOf(args[1]),
+     "live_landscape_sidebar",Boolean.valueOf(args[2]),"live_cart",false);
+   Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
+   prefs.setAccessible(true);
+   prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
+    (proxy,method,values)->settings.getOrDefault(values[0],(Boolean)values[1])));
+  }
+  if(args[0].equals("recommend-video")){
+   Map<String,Boolean> settings=args.length==1?Map.of("ads",false)
+     :Map.of("ads",false,"recommend_video",Boolean.valueOf(args[1]));
    Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
    prefs.setAccessible(true);
    prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
@@ -437,6 +545,35 @@ public class DisplayAdsTest {
   XposedModule.invokeHook(
    android.app.Activity.class.getDeclaredMethod("onCreate",android.os.Bundle.class),
    new ActivityChain(new android.app.Activity()));
+  if(args[0].equals("recommend-video")){
+   User tagged=new User();
+   tagged.tMCard=new Card();
+   tagged.tMCard.iCardType=1;
+   tagged.tMCard.vMomentCard.add(new Moment());
+   LineItem badgeVideo=new LineItem(new LZCategoryViewObject(tagged));
+   User grid=new User();
+   grid.iViewType=7;
+   grid.tMCard=tagged.tMCard;
+   LineItem gridVideo=new LineItem(new LiveGridViewObject(grid));
+   LineItem regularLive=new LineItem(new LiveGridViewObject(tagged));
+   LineItem ad=nativeAd();
+   User missingVideo=new User();
+   missingVideo.tMCard=new Card();
+   missingVideo.tMCard.iCardType=1;
+   LineItem otherMoment=new LineItem(new LZCategoryViewObject(missingVideo));
+   List<?> input=List.of(regularLive,badgeVideo,otherMoment,gridVideo,ad);
+   boolean filter=args.length>1&&Boolean.parseBoolean(args[1]);
+   Class<?>[] signature={List.class,RefreshMode.class,int.class};
+   GameRecommendFragment home=new GameRecommendFragment();
+   for(RefreshMode mode:RefreshMode.values()){
+    check(Boolean.TRUE.equals(call(home,"endRefresh",signature,input,mode,5)),"Refresh result must be preserved");
+    check(home.items.equals(filter?List.of(regularLive,otherMoment,ad):input),"Only homepage VOD cards must be filtered");
+   }
+   BaseRecommendFragment anotherTab=new BaseRecommendFragment();
+   call(anotherTab,"endRefresh",signature,input,RefreshMode.REPLACE_ALL,5);
+   check(anotherTab.items.equals(input),"Other tabs must keep their videos");
+   return;
+  }
   if(args[0].equals("offline-room")){
    var view=new com.duowan.kiwi.liveend.impl.views.NotLivingView();
    var event=new com.duowan.kiwi.livead.api.adplugin.event.IPresenterAdEvent.ShowNotLiveAdEvent();
@@ -523,32 +660,19 @@ public class DisplayAdsTest {
    HYExtRightTopWindowModeManager manager=new HYExtRightTopWindowModeManager();
    Class<?>[] types={IFloatWindowContainer.class,MiniAppPopupFragment.class,
     ActCommEnt.class,int.class,boolean.class};
-   for(int id:new int[]{317,201,175,425}){
-    for(boolean landscape:new boolean[]{false,true}){
-     for(MiniAppPopupFragment fragment:new MiniAppPopupFragment[]{
-       null,new MiniAppPopupFragment()}){
-      call(manager,"createFloatWindowItemView",types,null,fragment,
-       new ActCommEnt(id),0,landscape);
+   for(boolean landscape:new boolean[]{false,true}){
+    for(int id:new int[]{317,201,175,425,8675311}){
+     for(int type:new int[]{0,1,2,3}){
+      ActCommEnt entryData=new ActCommEnt(id);
+      entryData.iType=type;
+      int before=manager.attachedCards;
+      call(manager,"createFloatWindowItemView",types,null,null,entryData,0,landscape);
+      check(manager.attachedCards==before,"All server-pushed activity types must be filtered");
+      call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),entryData,0,landscape);
+      check(manager.attachedCards==before+1,"An open mini app can still be minimized");
      }
     }
    }
-   ActCommEnt cardCampaign=new ActCommEnt(999);
-   cardCampaign.sFullUrl="https://hd.huya.com/hyfe/revenue-business/cards-pot.html?source=live";
-   call(manager,"createFloatWindowItemView",types,null,null,cardCampaign,0,false);
-   check(manager.attachedCards==0,"Known promotions and card collection must not attach floating cards");
-   ActCommEnt pushedActivity=new ActCommEnt(8675309);
-   pushedActivity.iType=2;
-   for(boolean landscape:new boolean[]{false,true}){
-    call(manager,"createFloatWindowItemView",types,null,null,pushedActivity,0,landscape);
-   }
-   check(manager.attachedCards==0,"An unfamiliar server-pushed floating activity must not attach");
-   call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),pushedActivity,0,false);
-   check(manager.attachedCards==1,"An already opened mini app can still be minimized");
-   call(manager,"createFloatWindowItemView",types,null,null,new ActCommEnt(999),0,false);
-   for(ActCommEnt item:new ActCommEnt[]{new ActCommEnt(0),new ActCommEnt(999),null}){
-    call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),item,0,false);
-   }
-   check(manager.attachedCards==5,"Other entry types and null must retain original handling");
   }else if(args[0].equals("live-campaign-shortcuts")){
    UniversalComponentNavigationView nav=new UniversalComponentNavigationView();
    Class<?>[] types={List.class};
@@ -561,11 +685,12 @@ public class DisplayAdsTest {
    ComponentPanelItemInfo box=new ComponentPanelItemInfo(34211,"百宝箱",null);
    ComponentPanelItemInfo unknown=new ComponentPanelItemInfo(50004,"其他活动",
     "https://example.com/31bf1210/mobile/index.html");
+   ComponentPanelItemInfo cart=new ComponentPanelItemInfo(50005,"小黄车",null);
    List<?> input=Collections.unmodifiableList(Arrays.asList(
-    phone,box,phoneByRoute,cards,unknown,cardsByRoute));
+    phone,box,phoneByRoute,cards,cart,unknown,cardsByRoute));
    call(nav,"setAllTimeLimitComps",types,input);
    check(nav.items.equals(Arrays.asList(box,unknown)),"Only the two campaigns should be removed");
-   check(input.size()==6,"Campaign filtering must preserve the caller's list");
+   check(input.size()==7,"Campaign filtering must preserve the caller's list");
    call(nav,"setAllTimeLimitComps",types,Collections.singletonList(phone));
    check(nav.items.isEmpty(),"A promotion-only refresh must clear old entries");
    call(nav,"setAllTimeLimitComps",types,new Object[]{null});
@@ -583,13 +708,71 @@ public class DisplayAdsTest {
    InputEntryData game=new InputEntryData("",null,4);
    InputEntryData hotPlay=new InputEntryData("守护幸运抽",null,10);
    InputEntryData newHotPlay=new InputEntryData("",null,10);
+   InputEntryData cart=new InputEntryData("小黄车入口",null,6);
+   InputEntryData cartByName=new InputEntryData("小黄车",null,0);
    List<?> input=Collections.unmodifiableList(Arrays.asList(
-    gift,cards,other,cardsByRoute,game,hotPlay,fans,commercial,newHotPlay));
+    gift,cards,other,cardsByRoute,game,hotPlay,fans,commercial,newHotPlay,cart,cartByName));
    call(bar,"refreshAllEntryView",new Class<?>[]{List.class},input);
    check(bar.items.equals(Arrays.asList(gift,other,fans)),"Remove promotion types and preserve unrelated entries");
-   check(input.size()==9,"Input bar filtering must preserve the caller's list");
+   check(input.size()==11,"Input bar filtering must preserve the caller's list");
    call(bar,"refreshAllEntryView",new Class<?>[]{List.class},Arrays.asList(game,commercial,newHotPlay));
    check(bar.items.isEmpty(),"A promotion-only refresh must clear old input entries");
+  }else if(args[0].equals("live-landscape-highlight-mark")){
+   for(int initial:new int[]{android.view.View.INVISIBLE,android.view.View.VISIBLE,android.view.View.GONE}){
+    var mark=new com.duowan.kiwi.livehighlightmark.impl.view.HighlightMarkView();
+    mark.setVisibility(initial);
+    var orientation=mark.getResources().getConfiguration();
+    orientation.orientation=2;
+    XposedModule.invokeHook(mark.getClass().getDeclaredConstructor(),new CtorChain(mark));
+    check(mark.getVisibility()==android.view.View.GONE,"Landscape creation must hide the highlight mark");
+    call(mark,"setVisible",new Class<?>[]{boolean.class},true);
+    check(mark.getVisibility()==android.view.View.GONE,"Landscape setVisible(true) must stay hidden");
+    orientation.orientation=1;
+    mark.dispatchLayout();
+    check(mark.getVisibility()==initial,"Portrait must restore the original highlight visibility");
+    check(mark.containerVisible,"Hiding the mark must preserve the host's child view state");
+
+    android.view.View root=new android.view.View();
+    root.child=new android.view.View();
+    root.child.setVisibility(initial);
+    var update=HuyaCompatEntry.class.getDeclaredMethod("updateRightSidebarVisibility",android.view.View.class);
+    update.setAccessible(true);
+    root.getResources().getConfiguration().orientation=2;
+    update.invoke(entry,root);
+    check(root.child.getVisibility()==android.view.View.GONE,"Landscape must hide the right sidebar");
+    root.getResources().getConfiguration().orientation=1;
+    update.invoke(entry,root);
+    check(root.child.getVisibility()==initial,"Portrait must restore the original sidebar visibility");
+   }
+  }else if(args[0].equals("live-landscape-reward-shortcuts")){
+   UniversalComponentNavigationView nav=new UniversalComponentNavigationView();
+   ComponentPanelItemInfo claimable=new ComponentPanelItemInfo(51001,"福利",null);
+   claimable.info.tReminderInfo=new com.duowan.HUYA.interactiveComInfoReminder();
+   claimable.info.tReminderInfo.sButton="可领取";
+   ComponentPanelItemInfo normal=new ComponentPanelItemInfo(51002,"竞猜",null);
+   ComponentPanelItemInfo reminder=new ComponentPanelItemInfo(51003,"预约",null);
+   reminder.info.tReminderInfo=new com.duowan.HUYA.interactiveComInfoReminder();
+   reminder.info.tReminderInfo.sButton="提醒我";
+   List<?> input=Collections.unmodifiableList(Arrays.asList(claimable,normal,reminder));
+   boolean sidebar=Boolean.parseBoolean(args[2]);
+   List<?> expected=sidebar?Arrays.asList(normal,reminder):input;
+   nav.landscape=true;
+   call(nav,"setAllTimeLimitComps",new Class<?>[]{List.class},input);
+   check(nav.items.equals(expected),"Landscape time-limited rewards must follow the sidebar switch");
+   call(nav,"setComponentData",new Class<?>[]{List.class},input);
+   check(nav.items.equals(expected),"Landscape component data must follow the sidebar switch");
+   check(input.size()==3,"Reward filtering must preserve the caller's list");
+   nav.landscape=false;
+   call(nav,"setAllTimeLimitComps",new Class<?>[]{List.class},input);
+   check(nav.items.equals(input),"Portrait must keep claimable rewards");
+   HYExtRightTopWindowModeManager manager=new HYExtRightTopWindowModeManager();
+   Class<?>[] types={IFloatWindowContainer.class,MiniAppPopupFragment.class,
+     ActCommEnt.class,int.class,boolean.class};
+   call(manager,"createFloatWindowItemView",types,null,null,new ActCommEnt(8675311),0,true);
+   boolean hidePushed=sidebar||Boolean.parseBoolean(args[1]);
+   check(manager.attachedCards==(hidePushed?0:1),"Pushed landscape cards must follow promotion or sidebar settings");
+   call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),new ActCommEnt(8675311),0,true);
+   check(manager.attachedCards==(hidePushed?1:2),"An open mini app must keep its floating window");
   }else if(args[0].equals("live-promotion-banners")){
    UniversalLiveBannerView banner=new UniversalLiveBannerView();
    banner.setData(Arrays.asList("old promotion"));
@@ -797,6 +980,128 @@ class HuyaDisplayAdsTest(unittest.TestCase):
         ], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required to execute the task-center script")
+    def test_task_center_popup_filter_retries_after_its_module_appears(self):
+        source = (ROOT / "tools/huya-compat-src/io/github/saycm/huyaplus/HuyaCompatEntry.java").read_text(encoding="utf-8")
+        url = re.search(r'TASK_CENTER_URL\s*=\s*("[^"]+")', source)[1]
+        constant = source.split("String TASK_CENTER_AD_SCRIPT =", 1)[1].split("\n\n", 1)[0]
+        script = "".join(json.loads(part) for part in re.findall(r'"(?:[^"\\]|\\.)*"', constant.replace("TASK_CENTER_URL", url)))
+        harness = "const script = " + json.dumps(script) + ";\nconst url = " + url + ";\n" + """
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const style = {
+    ready: false,
+    hasAttribute() { return this.ready; },
+    setAttribute() { this.ready = true; },
+};
+let element;
+let observers = 0;
+let queued = 0;
+let moduleReady = false;
+let refreshTabs;
+const completed = [];
+const shown = [];
+const hidden = [];
+const queue = {
+    state: { currentTask: null },
+    enqueue() { queued++; },
+    runPresent(task) { shown.push(task.meta.id); },
+    complete(id) { completed.push(id); },
+};
+const layer = {};
+const regularLayer = {};
+const modal = { show(component) { shown.push(component); }, hide(component) { hidden.push(component); } };
+const load = () => {
+    if (!moduleReady) throw new Error('Popup dependency is still loading');
+    return { A: queue };
+};
+const modules = { 90486: { Ay: modal }, 16205: { default: layer } };
+const resolve = id => modules[id] || load(id);
+resolve.m = { 90486: true, 16205: true };
+resolve.O = (unused, chunks, ready) => ready();
+const ad = { source: 'gold-coin', latestKey: 'gold-coin:index', payload: { iWindowType: 4 } };
+const ordinary = { ...ad, payload: { iWindowType: 2 } };
+const preloaded = { id: 'already-open', ...ad };
+let mounted = false;
+function classes() {
+    const names = new Set();
+    return {
+        contains(name) { return names.has(name); },
+        toggle(name, enabled) { if (enabled) names.add(name); else names.delete(name); },
+    };
+}
+function section(titles, iconLabel = false) {
+    const group = { active: 0, classList: classes() };
+    group.tabs = titles.map((text, index) => ({
+        textContent: iconLabel && index === 0 ? '' : text,
+        classList: classes(),
+        querySelector: () => iconLabel && index === 0 ? { alt: text } : null,
+        getAttribute: name => name === 'aria-selected' && group.active === index ? 'true' : 'false',
+        click: () => { group.active = index; },
+    }));
+    group.querySelectorAll = () => group.tabs;
+    return group;
+}
+const mixed = section(['下载专区', '游戏活动', '联运活动'], true);
+const downloadsOnly = section(['下载试玩']);
+const manual = section(['游戏活动']);
+const context = {
+    location: new URL(url),
+    document: {
+        getElementById: () => element,
+        createElement: () => style,
+        head: { appendChild(node) { element = node; } },
+        querySelectorAll: () => [mixed, downloadsOnly, manual],
+        querySelector: selector => mounted && selector === '.layer-general-wrap' ? {} : null,
+    },
+    window: { rspackChunkwelfare_center: { push(chunk) { chunk[2](resolve); } } },
+    MutationObserver: class {
+        constructor(run) { refreshTabs = run; }
+        observe() { observers++; }
+    },
+};
+assert.equal(vm.runInNewContext(script, context), false);
+assert.equal(mixed.classList.contains('huyaplus-hide-download-zone'), false);
+assert.equal(mixed.tabs[0].classList.contains('huyaplus-hide-download-tab'), true);
+assert.equal(mixed.tabs[1].classList.contains('huyaplus-hide-download-tab'), false);
+assert.equal(mixed.active, 1);
+assert.equal(downloadsOnly.classList.contains('huyaplus-hide-download-zone'), true);
+assert.equal(manual.active, 0);
+mixed.active = 0;
+refreshTabs();
+assert.equal(mixed.active, 1);
+resolve.m[75015] = true;
+assert.equal(vm.runInNewContext(script, context), false);
+moduleReady = true;
+queue.state.currentTask = preloaded;
+assert.equal(vm.runInNewContext(script, context), true);
+assert.deepEqual(hidden, []);
+mounted = true;
+refreshTabs();
+refreshTabs();
+assert.deepEqual(hidden, [layer]);
+mounted = false;
+const wrapped = queue.enqueue;
+assert.equal(vm.runInNewContext(script, context), true);
+assert.equal(queue.enqueue, wrapped);
+assert.equal(observers, 1);
+queue.enqueue(ad);
+queue.enqueue({ source: 'ordinary' });
+assert.equal(queued, 1);
+queue.runPresent({ meta: { id: 'queued-ad', ...ad }, payload: ad.payload });
+queue.runPresent({ meta: { id: 'sign-in', ...ordinary }, payload: ordinary.payload });
+assert.deepEqual(completed, ['queued-ad']);
+assert.deepEqual(shown, ['sign-in']);
+modal.show(layer, { dataSource: ad.payload, onAfterClose: () => completed.push('already-active') });
+const preserve = () => { throw new Error('normal modal closed'); };
+modal.show(layer, { dataSource: ordinary.payload, onAfterClose: preserve });
+modal.show(regularLayer, { dataSource: ad.payload, onAfterClose: preserve });
+assert.deepEqual(completed, ['queued-ad', 'already-active']);
+assert.deepEqual(shown, ['sign-in', layer, regularLayer]);
+"""
+        result = subprocess.run(["node", "-"], input=harness, capture_output=True, encoding="utf-8")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_cold_and_hot_splash_use_the_no_display_route(self):
         self.run_case("splash")
 
@@ -824,8 +1129,22 @@ class HuyaDisplayAdsTest(unittest.TestCase):
     def test_live_campaign_shortcuts_keep_non_promotional_buttons(self):
         self.run_case("live-campaign-shortcuts")
 
+    def test_recommend_video_filter_is_opt_in_and_keeps_other_cards(self):
+        for switches in ((), ("false",), ("true",)):
+            with self.subTest(switches=switches):
+                self.run_case("recommend-video", *switches)
+
     def test_live_input_campaign_shortcuts_keep_gift_and_other_entries(self):
         self.run_case("live-input-campaign-shortcuts")
+
+    def test_landscape_live_room_hides_the_highlight_mark(self):
+        self.run_case("live-landscape-highlight-mark")
+
+    def test_landscape_live_room_hides_claimable_reward_shortcuts(self):
+        for campaigns in ("false", "true"):
+            for sidebar in ("false", "true"):
+                with self.subTest(campaigns=campaigns, sidebar=sidebar):
+                    self.run_case("live-landscape-reward-shortcuts", campaigns, sidebar)
 
     def test_live_promotion_banner_refills_are_hidden_without_removing_task_progress(self):
         self.run_case("live-promotion-banners")

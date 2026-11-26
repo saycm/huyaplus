@@ -81,9 +81,7 @@ public final class AppDetailActivity extends Activity {
         qualityButton.setOnClickListener(view -> showQualityDialog());
         updateQualityButton();
         bindSwitch(R.id.switch_ads_value, GlassSettings.KEY_ADS);
-        bindSwitch(R.id.switch_live_cards_value, GlassSettings.KEY_LIVE_CARDS);
-        bindSwitch(R.id.switch_live_ad_banner_value, GlassSettings.KEY_LIVE_AD_BANNER);
-        bindSwitch(R.id.switch_live_ad_float_value, GlassSettings.KEY_LIVE_AD_FLOAT);
+        bindSwitch(R.id.switch_recommend_video_value, GlassSettings.KEY_RECOMMEND_VIDEO);
         bindSwitch(R.id.switch_rewards_value, GlassSettings.KEY_REWARDS);
         bindSwitch(R.id.switch_vip_ads_value, GlassSettings.KEY_VIP_ADS);
         bindSwitch(R.id.switch_vip_4k_value, GlassSettings.KEY_VIP_4K);
@@ -142,9 +140,7 @@ public final class AppDetailActivity extends Activity {
         }
         pendingIntegers.clear();
         syncSwitch(R.id.switch_ads_value, GlassSettings.KEY_ADS);
-        syncSwitch(R.id.switch_live_cards_value, GlassSettings.KEY_LIVE_CARDS);
-        syncSwitch(R.id.switch_live_ad_banner_value, GlassSettings.KEY_LIVE_AD_BANNER);
-        syncSwitch(R.id.switch_live_ad_float_value, GlassSettings.KEY_LIVE_AD_FLOAT);
+        syncSwitch(R.id.switch_recommend_video_value, GlassSettings.KEY_RECOMMEND_VIDEO);
         syncSwitch(R.id.switch_rewards_value, GlassSettings.KEY_REWARDS);
         syncSwitch(R.id.switch_vip_ads_value, GlassSettings.KEY_VIP_ADS);
         syncSwitch(R.id.switch_vip_4k_value, GlassSettings.KEY_VIP_4K);
@@ -202,7 +198,12 @@ public final class AppDetailActivity extends Activity {
                 + (installed ? getString(R.string.app_installed)
                              : getString(R.string.app_missing)) + "\n"
                 + "ads=" + switchValue(R.id.switch_ads_value) + "\n"
-                + "live=" + switchValue(R.id.switch_live_cards_value) + "\n"
+                + "live=" + value(GlassSettings.KEY_LIVE_CARDS) + "\n"
+                + "landscapeMark=" + value(GlassSettings.KEY_LIVE_LANDSCAPE_MARK) + "\n"
+                + "landscapeSidebar=" + value(GlassSettings.KEY_LIVE_LANDSCAPE_SIDEBAR) + "\n"
+                + "cart=" + value(GlassSettings.KEY_LIVE_CART) + "\n"
+                + "redPacket=" + value(GlassSettings.KEY_LIVE_RED_PACKET) + "\n"
+                + "weekStar=" + value(GlassSettings.KEY_LIVE_WEEK_STAR) + "\n"
                 + "rewards=" + switchValue(R.id.switch_rewards_value) + "\n"
                 + "vipAds=" + switchValue(R.id.switch_vip_ads_value) + "\n"
                 + "vip4k=" + switchValue(R.id.switch_vip_4k_value) + "\n"
@@ -218,5 +219,9 @@ public final class AppDetailActivity extends Activity {
 
     private boolean switchValue(int id) {
         return ((Switch) findViewById(id)).isChecked();
+    }
+
+    private boolean value(String key) {
+        return prefs.getBoolean(key, GlassSettings.defaultEnabled(key));
     }
 }

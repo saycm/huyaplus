@@ -25,6 +25,9 @@ final class NativeTaskAutomation {
     private final DailyAutomation gifts;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Set<String> seen = new HashSet<>();
+    private final Set<String> diceListsRead = new HashSet<>();
+    private final Set<String> coinListsRead = new HashSet<>();
+    private final Set<String> pendingGrainChecks = new HashSet<>();
     private Object context;
     private boolean running;
     private String diceMonitor;
@@ -39,6 +42,11 @@ final class NativeTaskAutomation {
         if (current != null) context = current;
     }
 
+    void invalidateTaskLists() {
+        diceListsRead.clear();
+        coinListsRead.clear();
+    }
+
     void onReady(long account) {
         onReady(account, () -> {});
     }
@@ -50,24 +58,36 @@ final class NativeTaskAutomation {
         int seconds;
         try { seconds = NativeTaskCatalog.intervalSeconds(prefs.getString(GlassSettings.KEY_TASK_INTERVAL, "30")); }
         catch (IllegalArgumentException failure) {
-            log("配置", "失败", "执行间隔无效，本轮未执行");
+            log("配置", "", "失败", "执行间隔无效，本轮未执行");
             finished.run();
             return;
         }
         long interval = seconds * 1000L;
-        if (!seen.add(account + "/" + date)) {
+        Runnable complete = () -> finishRun(() -> {
             finished.run();
             monitorDice(account, date, interval);
+        });
+        String dayKey = account + "/" + date;
+        boolean first = seen.add(dayKey);
+        if (!first && diceListsRead.contains(dayKey)) {
+            if (shouldRecheckGrain(dayKey)) {
+                running = true;
+                handler.postDelayed(() -> runDiceMissions(account, date, interval, true,
+                        () -> runCoins(account, date, interval, complete)), interval);
+            } else if (!coinListsRead.contains(dayKey) && prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) {
+                running = true;
+                runCoins(account, date, interval, complete);
+            } else complete.run();
             return;
         }
         running = true;
-        Runnable complete = () -> {
-            running = false;
-            finished.run();
-            monitorDice(account, date, interval);
-        };
-        Runnable tasks = () -> runTasks(account, date, interval, complete);
-        if (prefs.getBoolean(GlassSettings.KEY_DICE_WELFARE_SIGN, false)) {
+        Runnable tasks = () -> runDiceMissions(account, date, interval, false, () -> {
+            Runnable coins = () -> runCoins(account, date, interval, complete);
+            if (first && prefs.getBoolean(GlassSettings.KEY_AUTO_DICE, false)) {
+                handler.postDelayed(() -> rollDice(account, date, interval, coins), interval);
+            } else coins.run();
+        });
+        if (first && prefs.getBoolean(GlassSettings.KEY_DICE_WELFARE_SIGN, false)) {
             new WelfareSignRunner(new WelfareSignRunner.Host() {
                 @Override public boolean active() {
                     try {
@@ -81,7 +101,7 @@ final class NativeTaskAutomation {
                     catch (RuntimeException failure) { return false; }
                 }
                 @Override public void log(String state, String detail) {
-                    NativeTaskAutomation.this.log("任务中心签到", state, detail);
+                    NativeTaskAutomation.this.log("任务中心签到", "", state, detail);
                 }
                 @Override public void send(TaskWire.Struct request, NativeTaskRunner.Reply reply) {
                     client.send(account, "wupui", "executeUserSign", request,
@@ -92,11 +112,17 @@ final class NativeTaskAutomation {
         } else tasks.run();
     }
 
-    private void runTasks(long account, String date, long interval, Runnable finished) {
-        NativeTaskRunner runner = new NativeTaskRunner(new NativeTaskRunner.Host() {
+    private void finishRun(Runnable finished) {
+        running = false;
+        finished.run();
+        gifts.resumePendingLogin();
+    }
+
+    private NativeTaskRunner coinRunner(long account, String date, long interval, Runnable finished) {
+        return new NativeTaskRunner(new NativeTaskRunner.Host() {
             @Override public boolean enabled() { return prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false); }
             @Override public long uid() {
-                try { return client.loggedInUid(); }
+                try { return date.equals(currentDate()) ? client.loggedInUid() : 0; }
                 catch (ReflectiveOperationException | RuntimeException failure) { return 0; }
             }
             @Override public boolean claim(String key) {
@@ -111,12 +137,15 @@ final class NativeTaskAutomation {
                 }
             }
             @Override public void publish(List<NativeTaskCatalog.Task> tasks) {
-                try { store.replaceTasks(tasks); }
+                coinListsRead.add(account + "/" + date);
+                try { store.replaceTasks(account + "/" + date, tasks); }
                 catch (RuntimeException failure) {
                     log("任务列表", "失败", "任务清单保存失败，仍按当前开关执行");
                 }
             }
-            @Override public void log(String title, String state, String detail) { NativeTaskAutomation.this.log(title, state, detail); }
+            @Override public void log(String title, String state, String detail) {
+                NativeTaskAutomation.this.log("每日赚金币", title, state, detail);
+            }
             @Override public void later(long millis, Runnable run) { handler.postDelayed(run, millis); }
             @Override public void perform(NativeTaskCatalog.Task task,
                                           NativeTaskRunner.ActionReply reply) {
@@ -128,28 +157,29 @@ final class NativeTaskAutomation {
                         (result, code) -> handler.post(() -> reply.complete(result, code)));
             }
         }, interval, finished);
-        Runnable coins = () -> {
-            try {
-                if (prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) {
-                    handler.postDelayed(() -> runner.start(account, date), interval);
-                } else finished.run();
-            } catch (RuntimeException failure) {
-                log("任务中心", "失败", "读取配置失败，本轮未执行");
-                finished.run();
-            }
-        };
-        Runnable roll = () -> {
-            if (!prefs.getBoolean(GlassSettings.KEY_AUTO_DICE, false)) {
-                coins.run();
+    }
+
+    private void runCoins(long account, String date, long interval, Runnable finished) {
+        try {
+            if (!coinListsRead.contains(account + "/" + date)
+                    && prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) {
+                NativeTaskRunner runner = coinRunner(account, date, interval, finished);
+                handler.postDelayed(() -> runner.start(account, date), interval);
                 return;
             }
-            handler.postDelayed(() -> rollDice(account, date, interval, coins), interval);
-        };
+        } catch (RuntimeException failure) {
+            log("每日赚金币", "任务中心", "失败", "读取配置失败，本轮未执行");
+        }
+        finished.run();
+    }
+
+    private void runDiceMissions(long account, String date, long interval, boolean grainOnly, Runnable finished) {
+        String dayKey = account + "/" + date;
         class DiceMissions implements DiceMissionRunner.Host {
             private final ArrayDeque<AutomationRules.GrainPart> grainPlan = new ArrayDeque<>();
             private DiceTaskCatalog.Task grainTask;
-            private boolean grainPlanStarted;
             private boolean grainTaskComplete;
+            private boolean listRead;
 
             @Override public long uid() {
                 try { return date.equals(currentDate()) ? client.loggedInUid() : 0; }
@@ -165,7 +195,18 @@ final class NativeTaskAutomation {
                 catch (RuntimeException failure) { return false; }
             }
             @Override public void publish(List<DiceTaskCatalog.Task> tasks) {
-                store.replaceDiceTasks(tasks);
+                listRead = true;
+                diceListsRead.add(dayKey);
+                store.replaceDiceTasks(dayKey, tasks);
+                if (grainTask == null && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false)) {
+                    for (DiceTaskCatalog.Task task : tasks) {
+                        if (task.freeGrain() && taskEnabled(task)) {
+                            List<AutomationRules.GrainPart> saved = store.diceGrainPlan(dayKey);
+                            if (saved != null) loadGrainPlan(task, saved);
+                            break;
+                        }
+                    }
+                }
                 if (grainTask == null) return;
                 grainTaskComplete = false;
                 for (DiceTaskCatalog.Task task : tasks) {
@@ -175,7 +216,9 @@ final class NativeTaskAutomation {
                     }
                 }
             }
-            @Override public void log(String title, String state, String detail) { NativeTaskAutomation.this.log(title, state, detail); }
+            @Override public void log(String title, String state, String detail) {
+                NativeTaskAutomation.this.log("骰子任务", title, state, detail);
+            }
             @Override public void later(long delay, Runnable run) { handler.postDelayed(run, delay); }
             @Override public void send(String endpoint, TaskWire.Struct request, NativeTaskRunner.Reply reply) {
                 client.send(account, "wupui", endpoint, request,
@@ -186,12 +229,11 @@ final class NativeTaskAutomation {
                                           NativeTaskRunner.ActionReply reply) {
                 if (task.freeGrain()) {
                     try {
-                        if (!grainPlanStarted && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false)) {
-                            grainTask = task;
-                            grainPlanStarted = true;
-                            grainPlan.addAll(AutomationRules.planDiceGrain(AutomationRules.parse(
+                        if (grainTask == null && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false)) {
+                            List<AutomationRules.GrainPart> planned = AutomationRules.planDiceGrain(AutomationRules.parse(
                                     prefs.getString(GlassSettings.KEY_GIFT_ROOMS, "")),
-                                    bound -> java.util.concurrent.ThreadLocalRandom.current().nextInt(bound)));
+                                    bound -> java.util.concurrent.ThreadLocalRandom.current().nextInt(bound));
+                            loadGrainPlan(task, store.saveDiceGrainPlan(dayKey, planned));
                         }
                         sendNextGrain(allowed, reply);
                     } catch (IllegalArgumentException failure) {
@@ -221,11 +263,24 @@ final class NativeTaskAutomation {
                 reply.complete(false, "奖励跳过开关关闭，或该任务尚无静默动作");
             }
 
+            private void loadGrainPlan(DiceTaskCatalog.Task task, List<AutomationRules.GrainPart> plan) {
+                if (!AutomationRules.matchesGrainPlan(plan, AutomationRules.parse(
+                        prefs.getString(GlassSettings.KEY_GIFT_ROOMS, "")))) return;
+                grainTask = task;
+                for (AutomationRules.GrainPart part : plan) {
+                    if (!store.hasClaim(AutomationRules.confirmedGrainPart(dayKey, part.room, part.number))) {
+                        grainPlan.add(part);
+                    }
+                }
+            }
+
             private void sendNextGrain(java.util.function.BooleanSupplier allowed,
                                        NativeTaskRunner.ActionReply reply) {
                 AutomationRules.GrainPart part = grainPlan.poll();
                 if (part == null) {
-                    reply.complete(false, "未开启自定义赠送、配置不足以拆成三笔，或已送完计划额度");
+                    boolean started = grainTask != null && store.hasClaim("dice-grain-started/" + dayKey);
+                    reply.complete(false, started ? "已无待发送的计划笔数，等待虎牙更新进度"
+                            : "未开启自定义赠送，或当前配置不支持三笔赠送");
                     return;
                 }
                 gifts.sendDiceGrain(account, date, part,
@@ -246,11 +301,21 @@ final class NativeTaskAutomation {
                             });
                     return;
                 }
-                roll.run();
+                try {
+                    if (grainTask != null && !grainTaskComplete && taskEnabled(grainTask)
+                            && store.hasClaim("dice-grain-started/" + dayKey)) {
+                        pendingGrainChecks.add(dayKey);
+                    } else if (listRead) {
+                        pendingGrainChecks.remove(dayKey);
+                    }
+                } catch (RuntimeException failure) {
+                    log("虎粮赠送", "未确认", "赠送记录读取失败");
+                }
+                finished.run();
             }
         }
         DiceMissions missions = new DiceMissions();
-        new DiceMissionRunner(missions, interval, missions::finish).start(account, date);
+        new DiceMissionRunner(missions, interval, missions::finish).start(account, date, grainOnly);
     }
 
     private void rollDice(long account, String date, long interval, Runnable finished) {
@@ -267,7 +332,7 @@ final class NativeTaskAutomation {
                 catch (RuntimeException failure) { return false; }
             }
             @Override public void log(String state, String detail) {
-                NativeTaskAutomation.this.log("每日投骰子", state, detail);
+                NativeTaskAutomation.this.log("每日投骰子", "", state, detail);
             }
             @Override public void later(long delay, Runnable run) { handler.postDelayed(run, delay); }
             @Override public void send(String function, TaskWire.Struct body, NativeTaskRunner.Reply reply) {
@@ -279,33 +344,50 @@ final class NativeTaskAutomation {
 
     private void monitorDice(long account, String date, long interval) {
         String key = account + "/" + date;
-        if (key.equals(diceMonitor) || !prefs.getBoolean(GlassSettings.KEY_AUTO_DICE, false)) return;
+        if (key.equals(diceMonitor) || !diceMonitoringNeeded(key)) return;
         diceMonitor = key;
         Runnable check = new Runnable() {
             @Override public void run() {
                 if (!key.equals(diceMonitor)) return;
                 try {
-                    if (!date.equals(currentDate()) || client.loggedInUid() != account
-                            || !prefs.getBoolean(GlassSettings.KEY_AUTO_DICE, false)) {
+                    if (!date.equals(currentDate()) || client.loggedInUid() != account || !diceMonitoringNeeded(key)) {
                         diceMonitor = null;
                         return;
                     }
                     if (!running && gifts.isIdle()) {
                         running = true;
-                        rollDice(account, date, interval, () -> {
-                            running = false;
-                            handler.postDelayed(this, DICE_CHECK_INTERVAL);
+                        Runnable checked = () -> finishRun(() -> {
+                            if (!key.equals(diceMonitor)) return;
+                            if (diceMonitoringNeeded(key)) handler.postDelayed(this, DICE_CHECK_INTERVAL);
+                            else diceMonitor = null;
                         });
+                        Runnable roll = () -> {
+                            if (prefs.getBoolean(GlassSettings.KEY_AUTO_DICE, false)) {
+                                rollDice(account, date, interval, checked);
+                            } else checked.run();
+                        };
+                        if (shouldRecheckGrain(key)) runDiceMissions(account, date, interval, true, roll);
+                        else roll.run();
                         return;
                     }
                 } catch (ReflectiveOperationException | RuntimeException failure) {
-                    log("每日投骰子", "未确认", "库存复核失败，本轮未投骰");
+                    log("每日投骰子", "", "未确认", "库存复核失败，本轮未投骰");
                     running = false;
                 }
                 handler.postDelayed(this, DICE_CHECK_INTERVAL);
             }
         };
         handler.postDelayed(check, DICE_CHECK_INTERVAL);
+    }
+
+    private boolean diceMonitoringNeeded(String dayKey) {
+        return prefs.getBoolean(GlassSettings.KEY_AUTO_DICE, false) || shouldRecheckGrain(dayKey);
+    }
+
+    private boolean shouldRecheckGrain(String dayKey) {
+        return pendingGrainChecks.contains(dayKey)
+                && prefs.getBoolean(GlassSettings.KEY_DICE_MISSIONS, false)
+                && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false);
     }
 
     boolean isIdle() { return !running; }
@@ -356,8 +438,8 @@ final class NativeTaskAutomation {
         }
     }
 
-    private void log(String title, String state, String detail) {
-        try { store.append("虎牙任务中心", title, state, detail); }
+    private void log(String type, String title, String state, String detail) {
+        try { store.append(type, title, state, detail); }
         catch (RuntimeException failure) { module.log(Log.WARN, "FuckAD", "Task center journal unavailable"); }
     }
 }

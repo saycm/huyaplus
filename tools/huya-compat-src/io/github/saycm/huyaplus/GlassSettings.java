@@ -8,9 +8,15 @@ public final class GlassSettings {
     static final String ROOT_PREFS = "root_access";
     static final String ROOT_GRANTED = "root_granted";
     public static final String KEY_ADS = "ads";
+    public static final String KEY_RECOMMEND_VIDEO = "recommend_video";
     public static final String KEY_LIVE_CARDS = "live_cards";
     public static final String KEY_LIVE_AD_BANNER = "live_ad_banner";
     public static final String KEY_LIVE_AD_FLOAT = "live_ad_float";
+    public static final String KEY_LIVE_LANDSCAPE_MARK = "live_landscape_mark";
+    public static final String KEY_LIVE_LANDSCAPE_SIDEBAR = "live_landscape_sidebar";
+    public static final String KEY_LIVE_CART = "live_cart";
+    public static final String KEY_LIVE_RED_PACKET = "live_red_packet";
+    public static final String KEY_LIVE_WEEK_STAR = "live_week_star";
     public static final String KEY_REWARDS = "rewards";
     public static final String KEY_VIP_ADS = "vip_ads";
     public static final String KEY_VIP_4K = "vip_4k";
@@ -27,6 +33,7 @@ public final class GlassSettings {
 
     static boolean defaultEnabled(String key) {
         return !KEY_VIP_4K.equals(key)
+                && !KEY_RECOMMEND_VIDEO.equals(key)
                 && !KEY_LIVE_AD_BANNER.equals(key)
                 && !KEY_LIVE_AD_FLOAT.equals(key);
     }
@@ -65,6 +72,7 @@ public final class GlassSettings {
         GUARD(0, "我的守护", "251"),
         NOBLE(0, "虎牙贵族", "257"),
         CREATOR(0, "创作中心", "405"),
+        COMMISSION_REDEMPTION(0, "佣金兑换", ""),
         GAMES(1, "我的游戏", "281"),
         GAME_COACHING(1, "虎牙上分", "309"),
         MINI_GAMES(1, "在线小游戏", "275"),

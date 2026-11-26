@@ -56,8 +56,8 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             (MODULE_DIR / "res/mipmap-xxxhdpi/ic_launcher.png").is_file(),
             "launcher icon is missing",
         )
-        self.assertIn('android:versionCode="26"', manifest)
-        self.assertIn('android:versionName="1.25"', manifest)
+        self.assertIn('android:versionCode="28"', manifest)
+        self.assertIn('android:versionName="1.27"', manifest)
         self.assertIn('android:name=".GlassDashboardActivity"', manifest)
         self.assertIn('android:name=".AppDetailActivity"', manifest)
         self.assertIn('android:theme="@style/GlassDashboard"', manifest)
@@ -76,6 +76,10 @@ class HuyaApi102MetadataTest(unittest.TestCase):
         detail_activity = (
             ROOT
             / "tools/huya-compat-src/io/github/saycm/huyaplus/AppDetailActivity.java"
+        )
+        mine_settings = (
+            ROOT
+            / "tools/huya-compat-src/io/github/saycm/huyaplus/MineSettingsActivity.java"
         )
         self.assertTrue(layout.is_file(), "glass dashboard layout is missing")
         self.assertTrue(detail_layout.is_file(), "app detail layout is missing")
@@ -106,6 +110,8 @@ class HuyaApi102MetadataTest(unittest.TestCase):
         ):
             self.assertNotIn(f'@+id/{name}', layout_text)
         self.assertIn("Uri.parse", activity.read_text(encoding="utf-8"))
+        self.assertIn('name="dashboard_version">v1.27</string>',
+                      (MODULE_DIR / "res/values/strings.xml").read_text(encoding="utf-8"))
         detail_text = detail_layout.read_text(encoding="utf-8")
         self.assertTrue(hero_pika.is_file(), "hero pikachu drawable is missing")
         self.assertTrue(app_pika.is_file(), "app pikachu drawable is missing")
@@ -125,9 +131,29 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             "copy_diagnostics_detail",
         ):
             self.assertIn(f'@+id/{name}', detail_text)
-        for switch in ("ads", "live_cards", "rewards", "vip_ads", "vip_4k"):
+        for switch in (
+            "ads",
+            "rewards",
+            "vip_ads",
+            "vip_4k",
+        ):
             self.assertIn(f'@+id/switch_{switch}_value', detail_text)
             self.assertIn(f'@+id/switch_{switch}', detail_text)
+        for key in (
+            "live_cards",
+            "live_landscape_mark",
+            "live_landscape_sidebar",
+            "live_cart",
+            "live_red_packet",
+            "live_week_star",
+            "live_ad_banner",
+            "live_ad_float",
+        ):
+            self.assertNotIn(f'@+id/switch_{key}_value', detail_text)
+            self.assertIn(
+                f'GlassSettings.KEY_{key.upper()}',
+                mine_settings.read_text(encoding="utf-8"),
+            )
         self.assertIn("AppDetailActivity.class", activity.read_text(encoding="utf-8"))
         activity_text = activity.read_text(encoding="utf-8")
         detail_activity_text = detail_activity.read_text(encoding="utf-8")
@@ -154,6 +180,10 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             ROOT
             / "tools/huya-compat-src/io/github/saycm/huyaplus/GlassSettings.java"
         )
+        mine_settings = (
+            ROOT
+            / "tools/huya-compat-src/io/github/saycm/huyaplus/MineSettingsActivity.java"
+        ).read_text(encoding="utf-8")
         settings_text = settings.read_text(encoding="utf-8")
         detail_text = detail_activity.read_text(encoding="utf-8")
         self.assertIn("GlassSettings.PREFS", detail_text)
@@ -162,9 +192,23 @@ class HuyaApi102MetadataTest(unittest.TestCase):
         self.assertIn("GlassSettings.PREFS", entry.read_text(encoding="utf-8"))
         entry_text = entry.read_text(encoding="utf-8")
         self.assertIn("getRemotePreferences(", entry_text)
-        for key in ("ads", "live_cards", "rewards", "vip_ads", "vip_4k"):
+        for key in (
+            "ads",
+            "live_cards",
+            "live_landscape_mark",
+            "live_landscape_sidebar",
+            "live_cart",
+            "live_red_packet",
+            "live_week_star",
+            "rewards",
+            "vip_ads",
+            "vip_4k",
+        ):
             self.assertIn(f"KEY_{key.upper()}", settings_text)
-            self.assertIn(f"GlassSettings.KEY_{key.upper()}", detail_text)
+            self.assertTrue(
+                f"GlassSettings.KEY_{key.upper()}" in detail_text
+                or f"GlassSettings.KEY_{key.upper()}" in mine_settings
+            )
 
     def test_native_task_catalog_has_per_task_switches_and_cross_process_sync(self):
         panel = (

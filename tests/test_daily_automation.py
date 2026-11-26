@@ -11,7 +11,13 @@ from test_huya_loader_lifecycle import ROOT, JDK, SDK, EXE, SOURCES
 DAILY_SOURCES = dict(SOURCES)
 DAILY_SOURCES.update({
     "android/net/Uri.java": '''package android.net;
-public class Uri {public static Uri parse(String value){return new Uri();}}
+public class Uri {
+ private final String value;
+ private Uri(String value){this.value=value;}
+ public static Uri parse(String value){return new Uri(value);}
+ public String getScheme(){return java.net.URI.create(value).getScheme();}
+ public String toString(){return value;}
+}
 ''',
     "android/os/Bundle.java": '''package android.os;
 import java.util.*;
@@ -52,6 +58,7 @@ public class Handler {
  public Handler(Looper looper){}
  public boolean post(Runnable run){return postDelayed(run,0);}
  public boolean postDelayed(Runnable run,long delay){tasks.add(new Task(now+delay,run));return true;}
+ public void removeCallbacks(Runnable run){tasks.removeIf(task->task.run==run);}
  public static void advance(long ms){
   long end=now+ms;
   while(!tasks.isEmpty()&&tasks.peek().due<=end){Task task=tasks.poll();now=task.due;task.run.run();}
@@ -112,20 +119,33 @@ public class IntentFilter {public IntentFilter(String action){}}
 import android.os.Bundle;import android.content.*;import java.util.*;
 final class LocalTaskStore {
  static final List<Bundle> localEvents=new ArrayList<>();
+ static final List<String> taskScopes=new ArrayList<>();
+ static final Map<String,List<AutomationRules.GrainPart>> giftPlans=new HashMap<>();
  final Runnable onAppend;
  LocalTaskStore(Context context){this(context,null);}
  LocalTaskStore(Context context,Runnable onAppend){this.onAppend=onAppend;}
  boolean claim(String key){return ContentResolver.claims.add(key);}
  boolean hasClaim(String key){return ContentResolver.claims.contains(key);}
+ boolean claimFirstGrainPart(String key,String day,long room){
+  String owner="dice-grain-room/"+day+"/"+room;
+  if(hasClaim(key)||hasClaim(owner))return false;
+  claim(key);claim(owner);claim("dice-grain-started/"+day);return true;
+ }
+ void release(String key){ContentResolver.claims.remove(key);}
+ void selectTaskScope(String scope){taskScopes.add(scope);}
+ List<AutomationRules.GrainPart> diceGrainPlan(String day){return giftPlans.get(day);}
+ List<AutomationRules.GrainPart> saveDiceGrainPlan(String day,List<AutomationRules.GrainPart> plan){
+  return giftPlans.computeIfAbsent(day,key->plan);
+ }
  void append(String task,String target,String state,String detail){
   Bundle row=new Bundle();row.putString("task",task);row.putString("target",target);
   row.putString("state",state);row.putString("detail",detail);localEvents.add(row);
   if(onAppend!=null)onAppend.run();
  }
- void replaceTasks(List<NativeTaskCatalog.Task> tasks){if(onAppend!=null)onAppend.run();}
- void replaceDiceTasks(List<DiceTaskCatalog.Task> tasks){if(onAppend!=null)onAppend.run();}
+ void replaceTasks(String scope,List<NativeTaskCatalog.Task> tasks){if(onAppend!=null)onAppend.run();}
+ void replaceDiceTasks(String scope,List<DiceTaskCatalog.Task> tasks){if(onAppend!=null)onAppend.run();}
  ArrayList<Bundle> events(){return new ArrayList<>(localEvents);}
- ArrayList<Bundle> tasks(){return new ArrayList<>();}
+ ArrayList<Bundle> tasks(String scope){return new ArrayList<>();}
 }
 ''',
     "com/duowan/taf/jce/JceStruct.java": '''package com.duowan.taf.jce;public class JceStruct {}
@@ -183,10 +203,34 @@ public class FansSignReq extends com.duowan.taf.jce.JceStruct {public UserId tId
     "com/duowan/HUYA/FansSignRsp.java": '''package com.duowan.HUYA;
 public class FansSignRsp extends com.duowan.taf.jce.JceStruct {public int iCode;public String sMsg="test";}
 ''',
+    "com/duowan/HUYA/GetFansSignReq.java": '''package com.duowan.HUYA;
+public class GetFansSignReq extends FansSignReq {}
+''',
+    "com/duowan/kiwi/badge/wupfunction/BadgeWupFunction.java": '''package com.duowan.kiwi.badge.wupfunction;
+import com.duowan.HUYA.*;import ryxq.*;
+public class BadgeWupFunction {
+ public static class Status extends FansSignRsp {
+  public Sign tSign=new Sign();
+  public static class Sign {public long lSignInFlag;public int iPos=1;}
+ }
+ public static class GetFansSign extends jd8 {
+  final GetFansSignReq req;public GetFansSign(GetFansSignReq req){this.req=req;}
+  public void execute(){
+   Status response=new Status();
+   if(TestServer.signed.contains(xxe.uid+"/"+req.lPid))response.tSign.lSignInFlag=1;
+   TestServer.reply(this,response);
+  }
+ }
+}
+''',
     "ryxq/TestServer.java": '''package ryxq;
 import com.duowan.HUYA.*;import io.github.libxposed.api.XposedModule;
 public class TestServer {
- public static int lists,signs;public static boolean drop;
+ public static int lists,signs;public static boolean drop,malformedBadge,staleSignStatus;
+ public static int grainClaims;
+ public static boolean grainAvailable,dropGrainReceipt,wrongGrainOwner;
+ public static boolean rejectSign,dropSignReceipt,malformedSignReceipt;
+ public static final java.util.Set<String> signed=new java.util.HashSet<>();
  public static void reply(jd8 request,com.duowan.taf.jce.JceStruct response){
   if(drop)return;
   try{XposedModule.call(request,"onResponse",new Class<?>[]{com.duowan.taf.jce.JceStruct.class,boolean.class},response,false);}
@@ -201,6 +245,7 @@ public class GameLiveWupFunction {
   final BadgeInfoListReq req;public j0(BadgeInfoListReq req){this.req=req;}
   public void execute(){
    TestServer.lists++;BadgeInfoListRsp rsp=new BadgeInfoListRsp();rsp.lUid=req.lToUid;
+   if(TestServer.malformedBadge)rsp.vBadgeInfo.add(null);
    rsp.vBadgeInfo.add(new BadgeInfoListRsp.Badge(11));
    rsp.vBadgeInfo.add(new BadgeInfoListRsp.Badge(11));
    rsp.vBadgeInfo.add(new BadgeInfoListRsp.Badge(22));TestServer.reply(this,rsp);
@@ -214,7 +259,41 @@ public class InputBarWupFunction {
  public static class SetFansSign extends jd8 {
   final FansSignReq req;public SetFansSign(FansSignReq req){this.req=req;}
   public void execute(){TestServer.signs++;FansSignRsp rsp=new FansSignRsp();
-   rsp.iCode=req.lPid==11?0:7;TestServer.reply(this,rsp);}
+   rsp.iCode=TestServer.rejectSign&&req.lPid==22?7:0;
+   if(TestServer.malformedSignReceipt&&req.lPid==11){rsp.iCode=7;rsp.sMsg=null;}
+   if(rsp.iCode==0&&(!TestServer.staleSignStatus||req.lPid!=11))TestServer.signed.add(xxe.uid+"/"+req.lPid);
+   if(!TestServer.dropSignReceipt||req.lPid!=11)TestServer.reply(this,rsp);}
+ }
+}
+''',
+    "io/github/saycm/huyaplus/HuyaTaskClient.java": '''package io.github.saycm.huyaplus;
+import ryxq.TestServer;
+final class HuyaTaskClient {
+ HuyaTaskClient(ClassLoader loader){}
+ long loggedInUid() throws ReflectiveOperationException{return ryxq.xxe.uid;}
+ boolean notificationEnabled(Object context)throws ReflectiveOperationException{return false;}
+ void claimDiceVideo(long account,String action,java.util.function.BooleanSupplier enabled,
+    NativeTaskRunner.ActionReply reply,long interval,java.util.function.Consumer<Runnable> afterReply){
+  throw new AssertionError("unexpected ad");
+ }
+ void send(long account,String servant,String function,TaskWire.Struct body,NativeTaskRunner.Reply reply){
+  if(!"queryFansGroupTaskInfo".equals(function)&&!"operateFansBox".equals(function)){
+   reply.complete(new TaskWire.Struct(),-1);
+   return;
+  }
+  long presenter=body.number(1);
+  if(!"wupui".equals(servant)||body.number(2)!=3||account!=ryxq.xxe.uid)
+   throw new AssertionError("wrong fans request");
+  if("queryFansGroupTaskInfo".equals(function)){
+   int state=TestServer.grainAvailable&&presenter==11?3:4;
+   reply.complete(new TaskWire.Struct().field(0,0).field(1,TestServer.wrongGrainOwner?account+1:account)
+    .field(2,presenter).field(7,new TaskWire.Struct().field(0,state)),0);
+  }else if("operateFansBox".equals(function)){
+   if(!TestServer.grainAvailable||presenter!=11)throw new AssertionError("unavailable reward claimed");
+   TestServer.grainClaims++;TestServer.grainAvailable=false;
+   if(!TestServer.dropGrainReceipt)reply.complete(new TaskWire.Struct().field(0,0).field(1,presenter)
+    .field(3,4).field(5,10),0);
+  }
  }
 }
 ''',
@@ -234,12 +313,29 @@ public class DailyEngineTest {
  public static void main(String[] args) throws Throwable {
   boolean enabled=!"disabled".equals(args[0])&&!"sync-storm".equals(args[0])
     &&!"auto-sync".equals(args[0])&&!"sync-during".equals(args[0])
-    &&!"sync-empty".equals(args[0])&&!args[0].startsWith("dice-");
+    &&!"sync-empty".equals(args[0])&&!"sync-resume".equals(args[0])&&!args[0].startsWith("dice-");
   final boolean[] signOn={enabled};
   if("sync-storm".equals(args[0])||"sync-during".equals(args[0]))ContentResolver.delaySync=true;
-  if("module-stopped".equals(args[0]))ContentResolver.blocked=true;
+  if("module-stopped".equals(args[0])||"sync-resume".equals(args[0]))ContentResolver.blocked=true;
   if("logout".equals(args[0]))xxe.uid=0;
   if("timeout".equals(args[0]))TestServer.drop=true;
+  if("malformed-badge".equals(args[0]))TestServer.malformedBadge=true;
+  if("stale-sign-status".equals(args[0])){
+   TestServer.dropSignReceipt=true;
+   TestServer.staleSignStatus=true;
+  }
+  if("malformed-sign-receipt".equals(args[0]))TestServer.malformedSignReceipt=true;
+  if("reward".equals(args[0])||"reward-timeout".equals(args[0])||"reward-wrong-account".equals(args[0]))
+   TestServer.grainAvailable=true;
+  if("reward-timeout".equals(args[0]))TestServer.dropGrainReceipt=true;
+  if("reward-wrong-account".equals(args[0]))TestServer.wrongGrainOwner=true;
+  if("sign-timeout".equals(args[0]))TestServer.dropSignReceipt=true;
+  if("sign-rejected".equals(args[0]))TestServer.rejectSign=true;
+  if("legacy-claim".equals(args[0])){
+   java.text.SimpleDateFormat date=new java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.ROOT);
+   date.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+   ContentResolver.claims.add("sign/"+xxe.uid+"/"+date.format(new java.util.Date()));
+  }
   SharedPreferences prefs=(SharedPreferences)Proxy.newProxyInstance(DailyEngineTest.class.getClassLoader(),
    new Class<?>[]{SharedPreferences.class},(proxy,method,values)->{
     if("native-failure".equals(args[0])&&"getBoolean".equals(method.getName())
@@ -271,8 +367,29 @@ public class DailyEngineTest {
    if(TestServer.signs!=0)throw new AssertionError("disabled queue sent sign requests");
    return;
   }
-  Handler.advance(40000);
+  Handler.advance(90000);
   int lists=TestServer.lists,signs=TestServer.signs;
+  if("malformed-badge".equals(args[0])){
+   if(signs!=2||!engine.isIdle())throw new AssertionError("a malformed badge blocked valid badges or left the queue busy");
+   return;
+  }
+  if("stale-sign-status".equals(args[0])||"malformed-sign-receipt".equals(args[0])){
+   if(signs!=2)throw new AssertionError("first badge run incomplete");
+   engine.onOpen(context);
+   Handler.advance(90000);
+   if(TestServer.lists!=2||TestServer.signs!=2)throw new AssertionError("an uncertain sign was sent again");
+   return;
+  }
+  if("sync-resume".equals(args[0])){
+   for(Thread thread:Thread.getAllStackTraces().keySet()){
+    if("FuckAD-log-sync".equals(thread.getName()))thread.join(3000);
+   }
+   if(ContentResolver.completed!=0)throw new AssertionError("blocked sync was marked complete");
+   ContentResolver.blocked=false;
+   engine.onOpen(context);
+   awaitProvider("跳过");
+   return;
+  }
   if("sync-empty".equals(args[0])){
    awaitProvider("跳过");
    long end=System.currentTimeMillis()+3000;
@@ -326,14 +443,34 @@ public class DailyEngineTest {
    return;
   }
   if("current-version".equals(args[0])){
-   if(lists!=1||signs!=2||!has("成功")||!has("未完成"))throw new AssertionError("new WUP callbacks");
+   if(lists!=1||signs!=2||!has("成功"))throw new AssertionError("new WUP callbacks");
+   return;
+  }
+  if("legacy-claim".equals(args[0])){
+   if(lists!=1||signs!=2)throw new AssertionError("old daily claim blocked unfinished badges");
+   return;
+  }
+  if("reward".equals(args[0])||"reward-timeout".equals(args[0])||"reward-wrong-account".equals(args[0])
+     ||"sign-timeout".equals(args[0])||"sign-rejected".equals(args[0])){
+   boolean rewardSucceeded=LocalTaskStore.localEvents.stream().anyMatch(x->
+      "粉丝团每日虎粮".equals(x.getString("task",""))&&"成功".equals(x.getString("state","")));
+   int claims=args[0].equals("reward")||args[0].equals("reward-timeout")?1:0;
+   if(TestServer.grainClaims!=claims||rewardSucceeded!=args[0].equals("reward")||signs!=2)
+    throw new AssertionError("incorrect reward or sign outcome");
+   if("sign-rejected".equals(args[0])&&!has("未完成"))throw new AssertionError("rejected sign marked successful");
+   TestServer.rejectSign=false;
+   engine.onOpen(context);Handler.advance(90000);
+   if(TestServer.grainClaims!=claims||TestServer.signs!=(args[0].equals("sign-rejected")?3:2))
+    throw new AssertionError("recovery repeated a confirmed reward or sign");
+   if(args[0].endsWith("timeout")&&TestServer.lists!=2)
+    throw new AssertionError("ambiguous receipt did not trigger read-back");
    return;
   }
   if("success".equals(args[0])||"module-stopped".equals(args[0])||"native-failure".equals(args[0])){
-   if(lists!=1||signs!=2||!has("成功")||!has("未完成"))throw new AssertionError("sign results");
+   if(lists!=1||signs!=2||!has("成功"))throw new AssertionError("sign results");
    long confirmed=LocalTaskStore.localEvents.stream().filter(x->"粉丝牌打卡".equals(x.getString("task",""))
      &&"成功".equals(x.getString("state",""))).count();
-   if(confirmed!=1)throw new AssertionError("failed response marked successful");
+   if(confirmed!=2)throw new AssertionError("missing successful sign results");
    engine.onOpen(context);Handler.advance(40000);
    new DailyAutomation(module,prefs,DailyEngineTest.class.getClassLoader()).onOpen(context);
    Handler.advance(40000);
@@ -341,13 +478,14 @@ public class DailyEngineTest {
    XposedModule.call(new jd8(),"onResponse",new Class<?>[]{com.duowan.taf.jce.JceStruct.class,boolean.class},
      new com.duowan.HUYA.FansSignRsp(),false);
    if(oe6.originals!=1)throw new AssertionError("unrelated callback changed");
-   xxe.uid=222;engine.onOpen(context);Handler.advance(40000);
+   xxe.uid=222;engine.onOpen(context);Handler.advance(90000);
    if(TestServer.lists!=2||TestServer.signs!=4)throw new AssertionError("account not isolated");
   }else if("timeout".equals(args[0])){
    if(lists!=1||signs!=0||!has("结果未确认"))throw new AssertionError("timeout marked complete");
+   TestServer.drop=false;
    new DailyAutomation(module,prefs,DailyEngineTest.class.getClassLoader()).onOpen(context);
-   Handler.advance(40000);
-   if(TestServer.lists!=1)throw new AssertionError("timeout retried");
+   Handler.advance(90000);
+   if(TestServer.lists!=2||TestServer.signs!=2)throw new AssertionError("badge list timeout blocked recovery");
   }else if(lists!=0||signs!=0||!has("跳过"))throw new AssertionError("disabled or logged out ran tasks");
  }
 }
@@ -374,8 +512,10 @@ class DailyAutomationTest(unittest.TestCase):
                 capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            for case in ("success", "current-version", "disabled", "logout", "timeout", "module-stopped", "auto-sync",
-                         "sync-during", "sync-storm", "native-failure",
+            for case in ("legacy-claim", "timeout", "success", "current-version", "disabled", "logout", "module-stopped", "auto-sync",
+                         "malformed-badge", "stale-sign-status", "malformed-sign-receipt",
+                         "reward", "reward-timeout", "reward-wrong-account", "sign-timeout", "sign-rejected",
+                         "sync-during", "sync-storm", "sync-resume", "native-failure",
                          "dice-off", "dice-busy", "dice-unavailable", "sync-empty", "disable-running"):
                 with self.subTest(case=case):
                     result = subprocess.run(

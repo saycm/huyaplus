@@ -92,7 +92,9 @@ public class NativeTasksTest {
    require(function.equals("receiveUserLevelTaskPrize"),"unexpected network action "+function);
    require(servant.equals("commui"),"wrong reward servant");
    long claimedId=((Number)request.get(1)).longValue();
-   require(claimedId<3||(actions.size()>0&&(claimedId==24||claimedId==25)),"download or ineligible task sent");
+   require(claimedId<3
+     ||(actions.size()>0&&(claimedId==24||claimedId==25)),
+     "download or ineligible task sent");
    claimsSent++;sentAt.add(time);claimedIds.add(claimedId);
    pending=reply;
    if(!drop){Runnable receipt=()->{reply.complete(s(0,deny?0:1,3,security?923:0),0);
@@ -107,9 +109,16 @@ public class NativeTasksTest {
    Host host=new Host();host.meal=true;
    host.page=response(group(
      actionTask(27,"手慢无！必领468金币",34,"https://hd.huya.com/h5/welfare_center/free_gift_daily.html").field(4,2),
-     actionTask(28,"发送1条弹幕",1,"https://www.huya.com/998?hyaction=live",1,1).field(4,2)),
+     actionTask(28,"发送1条弹幕",1,"https://www.huya.com/998?hyaction=live",1,1).field(4,2),
+     actionTask(70,"浏览虎牙代售60s",24,"https://accshop.huya.com/h5/browse",1,1).field(4,1),
+     actionTask(71,"去QQ阅读领福利",7,coopAction("not-released"),1,1).field(21,"coop_task")),
+     group(actionTask(72,"去快手极速版看短视频",7,coopAction("not-released"),1,1).field(21,"coop_task"),
+      actionTask(73,"去携程体验积分活动",7,coopAction("not-released"),1,1).field(21,"coop_task"))
+      .field(0,"浏览 APP 赚金币"),
      s(0,"红包",2,6,4,Arrays.asList(s(0,4,1,bytes(s(0,"看广告开金币红包",1,2,2,6))))));
    new NativeTaskRunner(host,30000).start(12,"2099-01-01");host.advance(90000);
+   require(host.published.size()==1&&host.published.get(0).stream().map(task->task.title).toList()
+      .equals(List.of("整点领金币","饭点领金币补贴")),"excluded tasks appeared in the release catalog");
    require(host.queries==1&&host.states.stream().noneMatch(line->line.startsWith("等待:")),
      "removed gold tasks were still scheduled for review");
    require(host.claims.isEmpty()&&host.actions.isEmpty()&&host.claimsSent==0,

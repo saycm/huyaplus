@@ -6,6 +6,7 @@ import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -23,8 +24,10 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,12 +36,14 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Predicate;
+import java.util.function.BiPredicate;
 
 import io.github.libxposed.api.XposedModule;
 
@@ -63,40 +68,100 @@ public final class HuyaCompatEntry extends XposedModule {
             "(function(){"
             + "if(location.origin+location.pathname!=='" + TASK_CENTER_URL + "'||!document.head)return;"
             + "var existing=document.getElementById('huyaplus-task-center-ad-style');"
-            + "if(existing)return existing.hasAttribute('data-popup-filter');"
+            + "if(existing){"
+            + "var retry=existing.huyaplusInstallPopupFilter;"
+            + "return retry?retry():false;"
+            + "}"
             + "var style=document.createElement('style');"
             + "style.id='huyaplus-task-center-ad-style';"
             + "style.textContent='.sign-popup .sign-popup-wrap-srcoll > .suggest,"
             + ".sign-popup .sign-popup-wrap-srcoll > .suggest-static,"
-            + ".app-intermodal-task.huyaplus-hide-download-zone{display:none!important}';"
+            + ".app-intermodal-task.huyaplus-hide-download-zone,.intermodal-tab.huyaplus-hide-download-tab,"
+            + ".app-intermodal-task.huyaplus-switch-download-tab > .intermodal-content{display:none!important}';"
             + "document.head.appendChild(style);"
             + "function hideDownloadZone(){"
             + "document.querySelectorAll('section.app-intermodal-task').forEach(function(section){"
-            + "var matches=Array.prototype.some.call(section.querySelectorAll('.intermodal-tab'),function(tab){"
-            + "var icon=tab.querySelector('img');"
-            + "return (tab.textContent.trim()||(icon&&icon.alt))==='下载专区';"
+            + "var downloadActive=false,firstOther=null,hidden=0;"
+            + "section.querySelectorAll('.intermodal-tabs > .intermodal-tab').forEach(function(tab){"
+            + "var icon=tab.querySelector('img.tab-icon');"
+            + "var name=tab.textContent.trim()||(icon&&icon.alt.trim());"
+            + "var download=name==='下载专区'||name==='下载试玩';"
+            + "tab.classList.toggle('huyaplus-hide-download-tab',download);"
+            + "if(download){hidden++;if(tab.getAttribute('aria-selected')==='true')downloadActive=true;}"
+            + "else if(!firstOther)firstOther=tab;"
             + "});"
-            + "section.classList.toggle('huyaplus-hide-download-zone',matches);"
+            + "section.classList.toggle('huyaplus-hide-download-zone',hidden>0&&!firstOther);"
+            + "var waiting=section.classList.contains('huyaplus-switch-download-tab');"
+            + "section.classList.toggle('huyaplus-switch-download-tab',downloadActive&&!!firstOther);"
+            + "if(downloadActive&&firstOther&&!waiting){"
+            + "firstOther.click();"
+            + "if(firstOther.getAttribute('aria-selected')==='true')"
+            + "section.classList.toggle('huyaplus-switch-download-tab',false);"
+            + "}"
             + "});"
             + "}"
-            + "new MutationObserver(hideDownloadZone).observe(document.documentElement,"
-            + "{childList:true,subtree:true,characterData:true});"
+            + "var dismissVisiblePromotion;"
+            + "new MutationObserver(function(){"
+            + "hideDownloadZone();if(dismissVisiblePromotion)dismissVisiblePromotion();"
+            + "}).observe(document.documentElement,"
+            + "{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['aria-selected','alt']});"
             + "hideDownloadZone();"
             // Wait for the popup queue and the last deferred task-center bundle to register.
             + "var chunks=window.rspackChunkwelfare_center=window.rspackChunkwelfare_center||[];"
             + "chunks.push([['huyaplus-task-center-ads'],{},function(require){"
-            + "require.O(undefined,['6097','4418'],function(){"
-            + "if(!require.m[75015])return;"
-            + "var queue=require(75015).A;"
-            + "if(!queue||typeof queue.enqueue!=='function')return;"
+            + "function installPopupFilter(){"
+            + "if(style.hasAttribute('data-popup-filter'))return true;"
+            + "if(!require.m[75015])return false;"
+            + "var queue;"
+            + "try{queue=require(75015).A;}catch(error){return false;}"
+            + "if(!queue||typeof queue.enqueue!=='function')return false;"
+            + "function fromTaskCenter(task){"
+            + "return task&&task.source==='gold-coin'&&task.latestKey==='gold-coin:index';"
+            + "}"
+            + "function isPromotion(task,payload){return fromTaskCenter(task)&&payload&&payload.iWindowType===4;}"
             + "var enqueue=queue.enqueue;"
             + "queue.enqueue=function(task){"
-            + "if(task&&task.source==='gold-coin'&&task.latestKey==='gold-coin:index'"
-            + "&&task.payload&&task.payload.iWindowType===4)return;"
+            + "if(task&&isPromotion(task,task.payload))return;"
             + "return enqueue.apply(this,arguments);"
             + "};"
+            + "if(typeof queue.runPresent==='function'&&typeof queue.complete==='function'){"
+            + "var present=queue.runPresent;"
+            + "queue.runPresent=function(runtime){"
+            + "if(runtime&&isPromotion(runtime.meta,runtime.payload)){queue.complete(runtime.meta.id);return;}"
+            + "return present.apply(this,arguments);"
+            + "};"
+            + "}"
+            // A promotion already active in the queue can finish loading its modal after installation.
+            + "try{"
+            + "var modal=require.m[90486]&&require(90486).Ay;"
+            + "if(modal&&typeof modal.show==='function'){"
+            + "function promotionComponent(){"
+            + "try{return require.m[16205]&&require(16205).default;}catch(error){return null;}"
+            + "}"
+            + "var show=modal.show;"
+            + "modal.show=function(component,options){"
+            + "if(queue.state&&options&&isPromotion(queue.state.currentTask,options.dataSource)"
+            + "&&component===promotionComponent()"
+            + "&&typeof options.onAfterClose==='function'){options.onAfterClose();return Promise.resolve();}"
+            + "return show.apply(this,arguments);"
+            + "};"
+            + "if(typeof modal.hide==='function'){"
+            + "var dismissed;"
+            + "dismissVisiblePromotion=function(){"
+            + "var task=queue.state&&queue.state.currentTask;"
+            + "if(!fromTaskCenter(task)||task.id===dismissed||!document.querySelector('.layer-general-wrap'))return;"
+            + "var component=promotionComponent();"
+            + "if(component){try{modal.hide(component);dismissed=task.id;}catch(error){}}"
+            + "};"
+            + "dismissVisiblePromotion();"
+            + "}"
+            + "}"
+            + "}catch(error){}"
             + "style.setAttribute('data-popup-filter','ready');"
-            + "});"
+            + "return true;"
+            + "}"
+            + "style.huyaplusInstallPopupFilter=installPopupFilter;"
+            + "require.O(undefined,['6097','4418'],function(){installPopupFilter();});"
             + "}]);"
             + "return style.hasAttribute('data-popup-filter');"
             + "})()";
@@ -110,6 +175,11 @@ public final class HuyaCompatEntry extends XposedModule {
     private Toast qualityNotice;
     private final Map<Object, GlassSettings.NavigationEntry> navigationItems = new WeakHashMap<>();
     private final Map<View, Integer> hiddenNavigationViews = new WeakHashMap<>();
+    private final Map<View, Integer> hiddenHighlightMarks = new WeakHashMap<>();
+    private final Set<View> trackedRightSidebarRoots =
+            Collections.newSetFromMap(new WeakHashMap<>());
+    private final Map<View, Integer> hiddenRightSidebars = new WeakHashMap<>();
+    private boolean hideWeekStarEntries;
     private final ExecutorService liveMenuCatalogWriter = Executors.newSingleThreadExecutor();
     private final Map<String, String> publishedLiveMenuCatalog = new HashMap<>();
     private long nextLiveMenuCatalogSync;
@@ -224,11 +294,18 @@ public final class HuyaCompatEntry extends XposedModule {
         hookLiveMenu(classLoader);
         boolean ads = isEnabled(GlassSettings.KEY_ADS);
         boolean liveCards = isEnabled(GlassSettings.KEY_LIVE_CARDS);
+        boolean liveCart = isEnabled(GlassSettings.KEY_LIVE_CART);
+        boolean liveLandscapeMark = isEnabled(GlassSettings.KEY_LIVE_LANDSCAPE_MARK);
+        boolean liveLandscapeSidebar = isEnabled(GlassSettings.KEY_LIVE_LANDSCAPE_SIDEBAR);
+        boolean liveRedPacket = isEnabled(GlassSettings.KEY_LIVE_RED_PACKET);
+        hideWeekStarEntries = isEnabled(GlassSettings.KEY_LIVE_WEEK_STAR);
         boolean rewards = isEnabled(GlassSettings.KEY_REWARDS);
         boolean vipAds = isEnabled(GlassSettings.KEY_VIP_ADS);
         boolean vip4k = isEnabled(GlassSettings.KEY_VIP_4K);
+        if (ads || rewards) {
+            hookMiniappAds(classLoader, ads, rewards);
+        }
         if (rewards) {
-            hookMiniappReward(classLoader);
             hookAmsReward(classLoader);
         }
         hookAwardRequests(classLoader);
@@ -241,9 +318,25 @@ public final class HuyaCompatEntry extends XposedModule {
             hookListAds(classLoader);
             hookSplash(classLoader);
         }
+        if (isEnabled(GlassSettings.KEY_RECOMMEND_VIDEO)) {
+            hookRecommendVideos(classLoader);
+        }
         hookTaskCenterPromotions(classLoader);
-        if (liveCards) {
-            hookLiveRoomCards(classLoader);
+        if (liveCards || liveCart || liveLandscapeSidebar) {
+            hookLiveRoomCards(classLoader, liveCards, liveCart, liveLandscapeSidebar);
+        }
+        if (liveLandscapeMark) {
+            hookLandscapeHighlightMark(classLoader);
+        }
+        if (liveLandscapeSidebar) {
+            hookLandscapeRewardShortcuts(classLoader);
+            hookLandscapeRightSidebar(classLoader);
+        }
+        if (liveRedPacket) {
+            hookLiveRedPacket(classLoader);
+        }
+        if (hideWeekStarEntries) {
+            hookWeekStarBanner(classLoader);
         }
         if (isEnabled(GlassSettings.KEY_LIVE_AD_BANNER)) {
             hookNativeLiveAdBanner(classLoader);
@@ -723,8 +816,10 @@ public final class HuyaCompatEntry extends XposedModule {
                     Method click = classLoader.loadClass(name)
                             .getDeclaredMethod("onClickRateItem", infoType);
                     hook(click).intercept(chain -> {
-                        qualitySession.manualSelection();
-                        logInfo("manual quality selection; automatic selection cancelled");
+                        if (!isSelectedQualityRow(chain.getThisObject(), chain.getArg(0), infoType)) {
+                            qualitySession.manualSelection();
+                            logInfo("manual quality selection; automatic selection cancelled");
+                        }
                         return chain.proceed();
                     });
                 } catch (ClassNotFoundException | NoSuchMethodException ignored) {
@@ -759,6 +854,20 @@ public final class HuyaCompatEntry extends XposedModule {
             hookSwipeRoomQuality(classLoader, channelType);
         } catch (Throwable throwable) {
             logFailure(throwable);
+        }
+    }
+
+    private static boolean isSelectedQualityRow(Object panel, Object rate, Class<?> infoType) {
+        Object adapter = field(panel, "mRateAdapter");
+        if (adapter == null || !infoType.isInstance(rate)) return false;
+        try {
+            Method selected;
+            try { selected = adapter.getClass().getMethod("getSelectedId"); }
+            catch (NoSuchMethodException missing) { selected = adapter.getClass().getMethod("c"); }
+            long current = ((Number) selected.invoke(adapter)).longValue();
+            return current == ((Number) infoType.getMethod("getBitrate").invoke(rate)).intValue();
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            return false;
         }
     }
 
@@ -911,30 +1020,87 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.live.model.MultiBitrateInfo");
             Method getBitrate = infoType.getMethod("getBitrate");
             Method getDisplayName = infoType.getMethod("getDisplayName");
+            Field enabled = infoType.getField("iEnable");
             Map<Integer, String> rates = new LinkedHashMap<>();
             for (Object item : currentLineBitrates(classLoader, moduleType, module, lineIndex)) {
-                if (!infoType.isInstance(item)) continue;
-                Object bitrate = getBitrate.invoke(item);
+                if (!infoType.isInstance(item) || enabled.getInt(item) != 1) continue;
+                int bitrate = ((Number) getBitrate.invoke(item)).intValue();
+                if (qualitySession.rejected(token, bitrate)) continue;
                 Object name = getDisplayName.invoke(item);
-                if (bitrate instanceof Number) rates.put(((Number) bitrate).intValue(),
-                        name == null ? null : String.valueOf(name));
+                rates.put(bitrate, name == null ? null : String.valueOf(name));
             }
             if (rates.isEmpty()) return false;
             int selected = LiveQuality.select(preferred, -1, rates);
             if (selected < 0) return false;
-            Method switchLine = moduleType.getMethod(
-                    "switchLineTo", int.class, int.class, boolean.class);
             if (!qualitySession.pending(token)) return true;
-            switchLine.invoke(module, lineIndex, selected, true);
-            qualitySession.claim(token);
-            qualitySession.deferNotice(token, qualityNoticeTime() + 1000L);
-            logInfo("requested default quality once line=" + lineIndex
+            requestDefaultQuality(classLoader, moduleType, module, token, lineIndex, selected);
+            logInfo("requested default quality line=" + lineIndex
                     + " selected=" + selected + " available=" + rates);
             return true;
         } catch (Throwable throwable) {
             logFailure(throwable);
             return false;
         }
+    }
+
+    private void requestDefaultQuality(ClassLoader loader, Class<?> moduleType, Object module,
+                                       int token, int lineIndex, int bitrate)
+            throws ReflectiveOperationException {
+        Class<?> listenerType = loader.loadClass(
+                "com.duowan.kiwi.live.api.multiline.IMultiStreamSwitchListener");
+        Method add = moduleType.getMethod("addMultiStreamSwitchListener", listenerType);
+        Method remove = moduleType.getMethod("releaseMultiStreamSwitchListener", listenerType);
+        Method switchLine = moduleType.getMethod("switchLineTo", int.class, int.class, boolean.class);
+        Handler handler = getMainHandler();
+        AtomicBoolean done = new AtomicBoolean();
+        Object[] listener = new Object[1];
+        Runnable timeout = () -> {
+            if (!done.compareAndSet(false, true)) return;
+            removeQualityListener(remove, module, listener[0]);
+            if (qualitySession.claim(token)) logInfo("default quality result unavailable; leaving playback to Huya");
+        };
+        listener[0] = Proxy.newProxyInstance(loader, new Class<?>[]{listenerType}, (proxy, method, args) -> {
+            switch (method.getName()) {
+                case "equals": return proxy == args[0];
+                case "hashCode": return System.identityHashCode(proxy);
+                case "toString": return "HuyaPlusQualitySwitchListener";
+                case "onLineSwitchResult":
+                case "onSwitchStreamResult":
+                    boolean success = Boolean.TRUE.equals(args[0]);
+                    // Huya iterates its listener list while delivering the result.
+                    handler.post(() -> {
+                        if (!done.compareAndSet(false, true)) return;
+                        handler.removeCallbacks(timeout);
+                        removeQualityListener(remove, module, proxy);
+                        if (!qualitySession.pending(token)) return;
+                        if (success) {
+                            qualitySession.claim(token);
+                            qualitySession.deferNotice(token, qualityNoticeTime() + 1000L);
+                        } else {
+                            qualitySession.endSwitch(token, bitrate);
+                            scheduleQualityApply(loader, token);
+                        }
+                    });
+                    return null;
+                default: return method.getReturnType() == boolean.class ? Boolean.FALSE : null;
+            }
+        });
+        qualitySession.startSwitch(token);
+        try {
+            add.invoke(module, listener[0]);
+            switchLine.invoke(module, lineIndex, bitrate, true);
+            handler.postDelayed(timeout, 5000L);
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            done.set(true);
+            removeQualityListener(remove, module, listener[0]);
+            qualitySession.endSwitch(token, -1);
+            throw failure;
+        }
+    }
+
+    private void removeQualityListener(Method remove, Object module, Object listener) {
+        try { remove.invoke(module, listener); }
+        catch (ReflectiveOperationException | RuntimeException failure) { logFailure(failure); }
     }
 
     private Object findMultiLineModule(ClassLoader loader, Class<?> moduleType, int token)
@@ -1215,6 +1381,55 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
+    private void hookRecommendVideos(ClassLoader loader) {
+        try {
+            Class<?> fragment = loader.loadClass(
+                    "com.duowan.kiwi.list.homepage.tab.recommend.GameRecommendFragment");
+            Class<?> mode = loader.loadClass("com.duowan.kiwi.listframe.RefreshListener$RefreshMode");
+            Method endRefresh = fragment.getDeclaredMethod("endRefresh", List.class, mode, int.class);
+            hook(endRefresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                Object data = chain.getArg(0);
+                if (data instanceof List) {
+                    List<Object> filtered = new ArrayList<>((List<?>) data);
+                    if (filtered.removeIf(HuyaCompatEntry::isRecommendVideo)) {
+                        logInfo("filtered videos from homepage recommendations");
+                        return chain.proceed(new Object[]{filtered, chain.getArg(1), chain.getArg(2)});
+                    }
+                }
+                return chain.proceed();
+            });
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            logFailure(failure);
+        }
+    }
+
+    private static boolean isRecommendVideo(Object line) {
+        if (line == null) return false;
+        try {
+            Object row = line.getClass().getMethod("getLineItem").invoke(line);
+            if (row == null) return false;
+            Object user;
+            switch (row.getClass().getName()) {
+                case "com.duowan.kiwi.list.vo.lizard.LZCategoryViewObject":
+                    user = row.getClass().getMethod("getUserRecItem").invoke(row);
+                    break;
+                case "com.duowan.kiwi.list.vo.LiveGridViewObject":
+                    user = field(row, "userRecItem");
+                    if (!Integer.valueOf(7).equals(field(user, "iViewType"))) return false;
+                    break;
+                default:
+                    return false;
+            }
+            Object card = field(user, "tMCard");
+            if (!Integer.valueOf(1).equals(field(card, "iCardType"))) return false;
+            Object moments = field(card, "vMomentCard");
+            return moments instanceof List && !((List<?>) moments).isEmpty()
+                    && field(((List<?>) moments).get(0), "tVideoInfo") != null;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            return false;
+        }
+    }
+
     private void hookNativeLiveAdBanner(ClassLoader loader) {
         try {
             Class<?> type = loader.loadClass("com.duowan.kiwi.livead.api.adbanner.view.AdLiveBannerView");
@@ -1261,22 +1476,25 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private void hookLiveRoomCards(ClassLoader classLoader) {
-        try {
-            Class<?> type = classLoader.loadClass(
-                    "com.duowan.kiwi.universal.live.activitybar.banner.UniversalLiveBannerView");
-            Method setData = type.getDeclaredMethod("setData", List.class);
-            hook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-                Object data = chain.getArg(0);
-                if (data instanceof List && !((List<?>) data).isEmpty()) {
-                    logInfo("cleared live-room promotion banner");
-                    return chain.proceed(new Object[]{new ArrayList<>()});
-                }
-                return chain.proceed();
-            });
-            logInfo("hooked live-room promotion banner data");
-        } catch (Throwable throwable) {
-            logFailure(throwable);
+    private void hookLiveRoomCards(ClassLoader classLoader, boolean campaigns, boolean cart,
+            boolean landscapeSidebar) {
+        if (campaigns) {
+            try {
+                Class<?> type = classLoader.loadClass(
+                        "com.duowan.kiwi.universal.live.activitybar.banner.UniversalLiveBannerView");
+                Method setData = type.getDeclaredMethod("setData", List.class);
+                hook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    Object data = chain.getArg(0);
+                    if (data instanceof List && !((List<?>) data).isEmpty()) {
+                        logInfo("cleared live-room promotion banner");
+                        return chain.proceed(new Object[]{new ArrayList<>()});
+                    }
+                    return chain.proceed();
+                });
+                logInfo("hooked live-room promotion banner data");
+            } catch (Throwable throwable) {
+                logFailure(throwable);
+            }
         }
         try {
             Class<?> type = classLoader.loadClass(
@@ -1287,16 +1505,22 @@ public final class HuyaCompatEntry extends XposedModule {
             Method componentId = itemType.getMethod("getComponentId");
             Method componentName = itemType.getMethod("getComponentName");
             Method jumpUrl = itemType.getMethod("getJumpUrl", boolean.class);
-            hookCampaignShortcuts(setData, item -> {
+            Method interactiveInfo = findMethod(itemType, "getInteractiveComInfo", 0);
+            hookCampaignShortcuts(setData, (item, view) -> {
                 if (!itemType.isInstance(item)) {
                     return false;
                 }
                 try {
                     Object name = componentName.invoke(item);
-                    return Integer.valueOf(36305).equals(componentId.invoke(item))
+                    if (cart && isShoppingShortcutName(name)) {
+                        return true;
+                    }
+                    return (landscapeSidebar && interactiveInfo != null && isLandscape(view)
+                            && isRewardShortcut(item, interactiveInfo))
+                            || (campaigns && (Integer.valueOf(36305).equals(componentId.invoke(item))
                             || isCampaignShortcutName(name)
                             || isCampaignShortcutRoute(jumpUrl.invoke(item, false))
-                            || isCampaignShortcutRoute(jumpUrl.invoke(item, true));
+                            || isCampaignShortcutRoute(jumpUrl.invoke(item, true))));
                 } catch (ReflectiveOperationException ignored) {
                     return false;
                 }
@@ -1315,18 +1539,26 @@ public final class HuyaCompatEntry extends XposedModule {
             Method actionUrl = itemType.getMethod("getActionUrl");
             Method portrait = actionUrl.getReturnType().getMethod("getPortrait");
             Method landscape = actionUrl.getReturnType().getMethod("getLandscape");
-            hookCampaignShortcuts(bar.getDeclaredMethod("refreshAllEntryView", List.class), item -> {
+            hookCampaignShortcuts(bar.getDeclaredMethod("refreshAllEntryView", List.class),
+                    (item, view) -> {
                 if (!itemType.isInstance(item)) {
                     return false;
                 }
                 try {
                     int type = (int) entryType.invoke(item);
+                    Object name = title.invoke(item);
+                    if (cart && (type == 6 || isShoppingShortcutName(name))) {
+                        return true;
+                    }
+                    if (!campaigns) {
+                        return false;
+                    }
                     // InputEntryType.Commercial, Game and HotPlay.
                     if (type == 3 || type == 4 || type == 10) {
                         return true;
                     }
                     Object route = actionUrl.invoke(item);
-                    return isCampaignShortcutName(title.invoke(item))
+                    return isCampaignShortcutName(name)
                             || (route != null && (isCampaignShortcutRoute(portrait.invoke(route))
                                     || isCampaignShortcutRoute(landscape.invoke(route))));
                 } catch (ReflectiveOperationException ignored) {
@@ -1337,96 +1569,368 @@ public final class HuyaCompatEntry extends XposedModule {
         } catch (Throwable throwable) {
             logFailure(throwable);
         }
-        try {
-            Class<?> type = classLoader.loadClass("com.duowan.kiwi.popup.impl.PopupModule");
-            Class<?> itemType = classLoader.loadClass("com.duowan.kiwi.popup.api.PopupItem");
-            Method businessKey = itemType.getMethod("getBusinessKey");
-            for (String name : new String[]{"tryShowPopup", "tryPlaceholderPopup"}) {
-                Method show = type.getDeclaredMethod(name, itemType);
-                hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-                    Object item = chain.getArg(0);
-                    Object key = item == null ? null : businessKey.invoke(item);
-                    if ("cardcollectionactivity_streamertrigger".equals(key)) {
-                        logInfo("blocked card collection promotion before queueing");
-                        return false;
-                    }
-                    if (key instanceof String && ((String) key).endsWith("_autotrigger")) {
-                        logInfo("blocked automatic live-room card before queueing");
-                        return false;
-                    }
-                    return chain.proceed();
-                });
-            }
-            logInfo("hooked automatic live-room cards");
-        } catch (Throwable throwable) {
-            logFailure(throwable);
-        }
-        try {
-            Class<?> type = classLoader.loadClass(
-                    "com.huya.kiwi.hyext.delegate.api.HYExtRightTopWindowModeManager");
-            Method create = findMethod(type, "createFloatWindowItemView", 5);
-            if (create != null) {
-                hook(create).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-                    Object entry = chain.getArg(2);
-                    // The activity list supplies type 2 entries with no opened mini-app.
-                    if (chain.getArg(1) == null && (Integer.valueOf(2).equals(field(entry, "iType"))
-                            || isCampaignShortcutName(field(entry, "sName")))) {
-                        logInfo("blocked server-pushed live-room activity window");
-                        return null;
-                    }
-                    Object id = field(entry, "iEntId");
-                    // Huya's gift offer, game promotion and shopping activity windows.
-                    if (Integer.valueOf(317).equals(id) || Integer.valueOf(201).equals(id)
-                            || Integer.valueOf(175).equals(id)) {
-                        logInfo("blocked promotional live-room window before creation");
-                        return null;
-                    }
-                    if (Integer.valueOf(497).equals(id)) {
-                        logInfo("blocked All-Star live-room activity card before creation");
-                        return null;
-                    }
-                    if (Integer.valueOf(425).equals(id)
-                            || isCardCollectionRoute(field(entry, "sFullUrl"))) {
-                        logInfo("blocked card collection promotion before window creation");
-                        return null;
-                    }
-                    return chain.proceed();
-                });
-                logInfo("hooked promotional live-room window creation");
-            }
-        } catch (Throwable throwable) {
-            logFailure(throwable);
-        }
-        try {
-            Class<?> type = classLoader.loadClass(
-                    "com.duowan.kiwi.livead.impl.adplugin.module.HYRoomPopupPlugin");
-            Method enqueue = findMethod(type, "enqueue", 3);
-            if (enqueue == null) {
-                return;
-            }
-            hook(enqueue).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-                Object id = chain.getArg(0);
-                if (id instanceof String && ((String) id).startsWith("floatball_ad_")) {
-                    logInfo("blocked live-room floating ad before queueing");
-                    return null;
+        if (campaigns) {
+            try {
+                Class<?> type = classLoader.loadClass("com.duowan.kiwi.popup.impl.PopupModule");
+                Class<?> itemType = classLoader.loadClass("com.duowan.kiwi.popup.api.PopupItem");
+                Method businessKey = itemType.getMethod("getBusinessKey");
+                for (String name : new String[]{"tryShowPopup", "tryPlaceholderPopup"}) {
+                    Method show = type.getDeclaredMethod(name, itemType);
+                    hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                        Object item = chain.getArg(0);
+                        Object key = item == null ? null : businessKey.invoke(item);
+                        if ("cardcollectionactivity_streamertrigger".equals(key)) {
+                            logInfo("blocked card collection promotion before queueing");
+                            return false;
+                        }
+                        if (key instanceof String && ((String) key).endsWith("_autotrigger")) {
+                            logInfo("blocked automatic live-room card before queueing");
+                            return false;
+                        }
+                        return chain.proceed();
+                    });
                 }
-                return chain.proceed();
-            });
-            logInfo("hooked live-room floating ad queue");
-        } catch (Throwable throwable) {
-            logFailure(throwable);
+                logInfo("hooked automatic live-room cards");
+            } catch (Throwable throwable) {
+                logFailure(throwable);
+            }
+        }
+        if (campaigns || landscapeSidebar) {
+            try {
+                Class<?> type = classLoader.loadClass(
+                        "com.huya.kiwi.hyext.delegate.api.HYExtRightTopWindowModeManager");
+                Method create = findMethod(type, "createFloatWindowItemView", 5);
+                if (create != null) {
+                    hook(create).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                        // Server-pushed activities have no opened mini-app fragment.
+                        if (chain.getArg(1) == null && chain.getArg(2) != null
+                                && (campaigns || (landscapeSidebar && Boolean.TRUE.equals(chain.getArg(4))))) {
+                            logInfo("blocked server-pushed live-room activity window");
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+                    logInfo("hooked promotional live-room window creation");
+                }
+            } catch (Throwable throwable) {
+                logFailure(throwable);
+            }
+        }
+        if (campaigns) {
+            try {
+                Class<?> type = classLoader.loadClass(
+                        "com.duowan.kiwi.livead.impl.adplugin.module.HYRoomPopupPlugin");
+                Method enqueue = findMethod(type, "enqueue", 3);
+                if (enqueue == null) {
+                    return;
+                }
+                hook(enqueue).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    Object id = chain.getArg(0);
+                    if (id instanceof String && ((String) id).startsWith("floatball_ad_")) {
+                        logInfo("blocked live-room floating ad before queueing");
+                        return null;
+                    }
+                    return chain.proceed();
+                });
+                logInfo("hooked live-room floating ad queue");
+            } catch (Throwable throwable) {
+                logFailure(throwable);
+            }
+        }
+        if (cart) {
+            try {
+                Class<?> type = classLoader.loadClass(
+                        "com.duowan.kiwi.inputbar.api.view.entryview.ShoppingEntryView");
+                for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                    hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                        Object result = chain.proceed();
+                        Object target = chain.getThisObject();
+                        if (target instanceof View) {
+                            ((View) target).addOnAttachStateChangeListener(
+                                    new View.OnAttachStateChangeListener() {
+                                        @Override
+                                        public void onViewAttachedToWindow(View view) {
+                                            view.setVisibility(View.GONE);
+                                        view.post(() -> view.setVisibility(View.GONE));
+                                            logInfo("hid live-room shopping entry");
+                                        }
+
+                                        @Override
+                                        public void onViewDetachedFromWindow(View view) {
+                                        }
+                                    });
+                        ((View) target).addOnLayoutChangeListener(
+                                (changed, left, top, right, bottom,
+                                        oldLeft, oldTop, oldRight, oldBottom) ->
+                                        changed.setVisibility(View.GONE));
+                        }
+                        return result;
+                    });
+                }
+                logInfo("hooked live-room shopping entry");
+            } catch (Throwable throwable) {
+                logFailure(throwable);
+            }
         }
     }
 
-    private void hookCampaignShortcuts(Method refresh, Predicate<Object> isCampaign) {
+    private void hookLiveRedPacket(ClassLoader classLoader) {
+        try {
+            Class<?> type = classLoader.loadClass(
+                    "com.duowan.kiwi.redpacket.impl.entity.RedPacketEntryView");
+            hookRewardEntry(type);
+            logInfo("hooked live-room red packet entry");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+        try {
+            Class<?> type = classLoader.loadClass(
+                    "com.duowan.kiwi.livead.impl.adfloat.view.livereward.HyLiveRewardFloatViewV2");
+            hookRewardEntry(type);
+            logInfo("hooked live-room reward float");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void hookRewardEntry(Class<?> type) {
+        for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+            hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                Object result = chain.proceed();
+                Object target = chain.getThisObject();
+                if (target instanceof View) {
+                    View view = (View) target;
+                    hideRedPacketEntry(view);
+                    view.addOnLayoutChangeListener(
+                            (changed, left, top, right, bottom,
+                                    oldLeft, oldTop, oldRight, oldBottom) ->
+                                    hideRedPacketEntry((View) changed));
+                }
+                return result;
+            });
+        }
+    }
+
+    private void hideRedPacketEntry(View view) {
+        if (view.getVisibility() != View.GONE) {
+            view.setVisibility(View.GONE);
+            logInfo("hid live-room red packet entry");
+        }
+    }
+
+    private void hookWeekStarBanner(ClassLoader classLoader) {
+        try {
+            Class<?> type = classLoader.loadClass(
+                    "com.duowan.kiwi.universal.live.activitybar.banner.UniversalTaskBannerView");
+            for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    Object result = chain.proceed();
+                    Object target = chain.getThisObject();
+                    if (target instanceof View) {
+                        View view = (View) target;
+                        hideWeekStarBanner(view);
+                        view.addOnLayoutChangeListener(
+                                (changed, left, top, right, bottom,
+                                        oldLeft, oldTop, oldRight, oldBottom) ->
+                                        hideWeekStarBanner((View) changed));
+                    }
+                    return result;
+                });
+            }
+            logInfo("hooked live-room task banner");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void hideWeekStarBanner(View view) {
+        if (view.getVisibility() != View.GONE) {
+            view.setVisibility(View.GONE);
+            logInfo("hid live-room week star component");
+        }
+    }
+
+    private void hookLandscapeHighlightMark(ClassLoader classLoader) {
+        try {
+            Class<?> type = classLoader.loadClass(
+                    "com.duowan.kiwi.livehighlightmark.impl.view.HighlightMarkView");
+            Method setVisible = type.getDeclaredMethod("setVisible", boolean.class);
+            hook(setVisible).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                Object result = chain.proceed();
+                if (chain.getThisObject() instanceof View) {
+                    updateHighlightMarkVisibility((View) chain.getThisObject());
+                }
+                return result;
+            });
+            for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    Object result = chain.proceed();
+                    Object target = chain.getThisObject();
+                    if (target instanceof View) {
+                        View view = (View) target;
+                        updateHighlightMarkVisibility(view);
+                        view.addOnLayoutChangeListener(
+                                (changed, left, top, right, bottom,
+                                        oldLeft, oldTop, oldRight, oldBottom) ->
+                                        updateHighlightMarkVisibility((View) changed));
+                    }
+                    return result;
+                });
+            }
+            logInfo("hooked live-room highlight mark visibility");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void updateHighlightMarkVisibility(View view) {
+        updateLandscapeVisibility(view, isLandscape(view), hiddenHighlightMarks,
+                "hid live-room highlight mark in landscape");
+    }
+
+    private void hookLandscapeRewardShortcuts(ClassLoader classLoader) {
+        try {
+            Class<?> type = classLoader.loadClass(
+                    "com.duowan.kiwi.interaction.impl.view.UniversalComponentNavigationView");
+            Class<?> itemType = classLoader.loadClass(
+                    "com.duowan.kiwi.interaction.api.data.ComponentPanelItemInfo");
+            Method reminder = findMethod(itemType, "getInteractiveComInfo", 0);
+            Method setData = findMethod(type, "setComponentData", 1);
+            if (reminder == null || setData == null) {
+                return;
+            }
+            hook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                Object data = chain.getArg(0);
+                if (!(data instanceof List) || !isLandscape(chain.getThisObject())) {
+                    return chain.proceed();
+                }
+                List<Object> filtered = new ArrayList<>((List<?>) data);
+                if (!filtered.removeIf(item -> itemType.isInstance(item)
+                        && isRewardShortcut(item, reminder))) {
+                    return chain.proceed();
+                }
+                logInfo("filtered landscape live-room reward shortcuts");
+                return chain.proceed(new Object[]{filtered});
+            });
+            logInfo("hooked landscape live-room reward shortcuts");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void hookLandscapeRightSidebar(ClassLoader classLoader) {
+        hookLandscapeSidebarChild(classLoader,
+                "com.duowan.kiwi.interaction.impl.view.ComponentNavigationV2");
+        hookLandscapeSidebarChild(classLoader,
+                "com.duowan.kiwi.livead.impl.adfloat.view.livereward.HyLiveRewardFloatViewV2");
+    }
+
+    private void hookLandscapeSidebarChild(ClassLoader classLoader, String className) {
+        try {
+            Class<?> type = classLoader.loadClass(className);
+            for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    Object result = chain.proceed();
+                    Object target = chain.getThisObject();
+                    if (target instanceof View) {
+                        ((View) target).addOnAttachStateChangeListener(
+                                new View.OnAttachStateChangeListener() {
+                                    @Override
+                                    public void onViewAttachedToWindow(View view) {
+                                        View root = view.getRootView();
+                                        if (root == null) {
+                                            return;
+                                        }
+                                        if (trackedRightSidebarRoots.add(root)) {
+                                            root.getViewTreeObserver().addOnGlobalLayoutListener(
+                                                    () -> updateRightSidebarVisibility(root));
+                                        }
+                                        updateRightSidebarVisibility(root);
+                                    }
+
+                                    @Override
+                                    public void onViewDetachedFromWindow(View view) {
+                                    }
+                                });
+                    }
+                    return result;
+                });
+            }
+            logInfo("hooked landscape right sidebar " + className);
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void updateRightSidebarVisibility(View root) {
+        int id = root.getResources().getIdentifier(
+                "fl_right_sidebar_container", "id", TARGET_PACKAGE);
+        if (id == 0) {
+            return;
+        }
+        View sidebar = root.findViewById(id);
+        if (sidebar == null) {
+            return;
+        }
+        updateLandscapeVisibility(sidebar, isLandscape(root), hiddenRightSidebars,
+                "hid live-room right sidebar in landscape");
+    }
+
+    private void updateLandscapeVisibility(View view, boolean landscape,
+            Map<View, Integer> hidden, String message) {
+        int visibility = view.getVisibility();
+        if (landscape) {
+            if (visibility != View.GONE) {
+                hidden.put(view, visibility);
+                view.setVisibility(View.GONE);
+                logInfo(message);
+            }
+        } else {
+            Integer previous = hidden.remove(view);
+            if (previous != null && visibility == View.GONE) {
+                view.setVisibility(previous);
+            }
+        }
+    }
+
+    private static boolean isRewardShortcut(Object item, Method reminder) {
+        try {
+            Object button = field(field(reminder.invoke(item), "tReminderInfo"), "sButton");
+            return button instanceof String && ((String) button).contains("领取");
+        } catch (ReflectiveOperationException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isLandscape(Object target) {
+        if (target == null) {
+            return false;
+        }
+        if (target instanceof View) {
+            return ((View) target).getResources().getConfiguration().orientation
+                    == Configuration.ORIENTATION_LANDSCAPE;
+        }
+        try {
+            Object value = target.getClass().getMethod("isLandscape").invoke(target);
+            if (value instanceof Boolean) {
+                return (Boolean) value;
+            }
+        } catch (ReflectiveOperationException ignored) {
+            // Not every host type exposes its orientation.
+        }
+        return false;
+    }
+
+    private void hookCampaignShortcuts(Method refresh, BiPredicate<Object, Object> isCampaign) {
         hook(refresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
             Object data = chain.getArg(0);
             if (!(data instanceof List)) {
                 return chain.proceed();
             }
             List<?> items = (List<?>) data;
+            Object target = chain.getThisObject();
             List<Object> filtered = new ArrayList<>(items);
-            if (!filtered.removeIf(isCampaign)) {
+            if (!filtered.removeIf(item -> isCampaign.test(item, target))) {
                 return chain.proceed();
             }
             logInfo("filtered live-room promotion entries via " + refresh.getName());
@@ -1437,6 +1941,10 @@ public final class HuyaCompatEntry extends XposedModule {
     private static boolean isCampaignShortcutName(Object name) {
         return "抽手机".equals(name) || "集卡".equals(name) || "集卡领虎牙币".equals(name)
                 || "集五卡·瓜分10万奖金".equals(name) || "守护幸运抽".equals(name);
+    }
+
+    private static boolean isShoppingShortcutName(Object name) {
+        return name instanceof String && ((String) name).contains("小黄车");
     }
 
     private static boolean isCampaignShortcutRoute(Object value) {
@@ -1592,11 +2100,15 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private void hookMiniappReward(ClassLoader classLoader) {
+    private void hookMiniappAds(ClassLoader classLoader, boolean ads, boolean rewards) {
         try {
             Class<?> type = classLoader.loadClass(TARGET_CLASS);
             for (String name : new String[]{
                     "showRewardedVideoAd", "showCustomAd", "openCustomAd"}) {
+                boolean banner = "showCustomAd".equals(name);
+                if (banner ? !ads : !rewards) {
+                    continue;
+                }
                 Method show = findMethod(type, name, 2);
                 if (show == null) {
                     Log.w(TAG, name + " not found");
@@ -1604,7 +2116,6 @@ public final class HuyaCompatEntry extends XposedModule {
                 }
 
                 boolean custom = "openCustomAd".equals(name);
-                boolean banner = "showCustomAd".equals(name);
                 hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     String adId = readAdId(
                             chain.getArg(0),

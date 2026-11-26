@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.content.Intent;
+import android.database.ContentObserver;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
@@ -41,6 +42,7 @@ final class AutomationPanel {
     private Button refreshTasks;
     private boolean syncing;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private ContentObserver taskObserver;
 
     AutomationPanel(Activity activity, LinearLayout root) {
         this(activity, root, null);
@@ -76,7 +78,7 @@ final class AutomationPanel {
         }
         label(root, "每日自动任务", 19);
         label(root, "每天首次打开虎牙、登录就绪后在后台执行，不切换直播间。", 14);
-        sign = toggle(root, "已有粉丝牌自动打卡", GlassSettings.KEY_AUTO_SIGN);
+        sign = toggle(root, "已有粉丝牌自动打卡和领虎粮", GlassSettings.KEY_AUTO_SIGN);
         gift = toggle(root, "指定直播间赠送免费虎粮", GlassSettings.KEY_AUTO_GIFT);
         label(root, "只使用免费库存；不足时跳过，不购买。修改后请强制停止虎牙再打开。", 13);
         roomList = column();
@@ -130,17 +132,24 @@ final class AutomationPanel {
             if (roomList != null) renderRooms();
     }
 
-    void destroy() { handler.removeCallbacksAndMessages(null); }
+    void destroy() {
+        if (taskObserver != null) activity.getContentResolver().unregisterContentObserver(taskObserver);
+        handler.removeCallbacksAndMessages(null);
+    }
 
     private void syncTasks() {
+        if (taskObserver == null) {
+            taskObserver = new ContentObserver(handler) {
+                @Override public void onChange(boolean selfChange) { renderTasks(); }
+            };
+            activity.getContentResolver().registerContentObserver(TaskLogProvider.TASKS_URI, false, taskObserver);
+        }
         renderTasks();
         try {
             activity.sendBroadcast(new Intent(DailyAutomation.SYNC_LOGS)
                     .setPackage("com.duowan.kiwi"));
         } catch (RuntimeException ignored) {
         }
-        handler.postDelayed(this::renderTasks, 600L);
-        handler.postDelayed(this::renderTasks, 2500L);
     }
 
     private void renderTasks() {
@@ -150,6 +159,7 @@ final class AutomationPanel {
             result = activity.getContentResolver().call(
                     TaskLogProvider.URI, "read_tasks", null, null);
         } catch (RuntimeException failure) {
+            taskList.removeAllViews();
             taskSummary.setText("任务列表 · 读取失败");
             return;
         }

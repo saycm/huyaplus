@@ -37,11 +37,19 @@ final class DiceMissionRunner {
     }
 
     void start(long account, String date) {
+        start(account, date, false);
+    }
+
+    void start(long account, String date, boolean grainOnly) {
         if (started) return;
         started = true; this.account = account; this.date = date;
         query(list -> {
-            for (DiceTaskCatalog.Task task : list) if (task.type != 9 || task.status != 0) tasks.add(task);
-            for (DiceTaskCatalog.Task task : list) if (task.type == 9 && task.status == 0) tasks.add(task);
+            for (DiceTaskCatalog.Task task : list) {
+                if (grainOnly ? task.freeGrain() : task.type != 9 || task.status != 0) tasks.add(task);
+            }
+            if (!grainOnly) for (DiceTaskCatalog.Task task : list) {
+                if (task.type == 9 && task.status == 0) tasks.add(task);
+            }
             next();
         });
     }
@@ -105,13 +113,12 @@ final class DiceMissionRunner {
     private String key(String kind, DiceTaskCatalog.Task task) {
         String prefix = "dice-mission-" + kind + "/" + account + "/" + date + "/" + task.id;
         if (kind.equals("action") && task.marketVisit()) return prefix;
-        String key = prefix + "/" + task.claimed;
-        return kind.equals("action") && task.freeGrain() && task.target > 1 && task.progress > 0
-                ? key + "/" + task.progress : key;
+        return prefix + "/" + task.claimed;
     }
 
     private void action(DiceTaskCatalog.Task task) {
-        if (!host.claim(key("action", task))) {
+        // Gift attempts are deduplicated by the saved gift part, even when task progress is stale.
+        if (!task.freeGrain() && !host.claim(key("action", task))) {
             host.log(task.title, "跳过", "该轮动作已提交，结果不明时不重复执行"); next(); return;
         }
         int id = ++requestId;
@@ -157,7 +164,7 @@ final class DiceMissionRunner {
             if (!performed && current.type == 9 && current.progress > previous.progress) {
                 schedule(current); return;
             }
-            if (performed && current.freeGrain() && current.progress > previous.progress) {
+            if (performed && current.freeGrain()) {
                 schedule(current); return;
             }
             host.log(current.title, "服务端未确认",

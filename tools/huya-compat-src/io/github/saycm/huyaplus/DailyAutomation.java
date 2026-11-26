@@ -32,10 +32,16 @@ import io.github.libxposed.api.XposedModule;
 
 final class DailyAutomation {
     private static final long GIFT_CHECK_INTERVAL = 30 * 60 * 1000L;
+    private static final String BADGE_SIGN = "粉丝牌打卡";
+    private static final String BADGE_GRAIN = "粉丝团每日虎粮";
+    private static final int GRAIN_CLAIMABLE = 3;
+    private static final int GRAIN_CLAIMED = 4;
+    private static final int CLAIM_FANS_BOX = 3;
     static final String SYNC_LOGS = "io.github.saycm.huyaplus.SYNC_LOGS";
     private final XposedModule module;
     private final SharedPreferences prefs;
     private final ClassLoader loader;
+    private final HuyaTaskClient taskClient;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<Object, Pending> requests = Collections.synchronizedMap(new IdentityHashMap<>());
     private final Set<String> seen = new HashSet<>();
@@ -56,6 +62,8 @@ final class DailyAutomation {
     private boolean callbacksInstalled;
     private boolean openedLogged;
     private long account;
+    private long phaseAccount;
+    private long pendingLogin;
     private String activeDay;
     private int signed;
     private int alreadySigned;
@@ -68,10 +76,11 @@ final class DailyAutomation {
     private java.util.function.BooleanSupplier diceGiftAllowed;
     private AutomationRules.GrainPart diceGrainPart;
     private Runnable afterBadges;
+    private volatile String taskSnapshotScope = "";
     private long requestInterval = 30000L;
     private boolean requestGap;
     private int queuedRequests;
-    private boolean syncFailureLogged;
+    private volatile boolean syncFailureLogged;
 
     private static final class GiftRound {
         final long account;
@@ -110,6 +119,7 @@ final class DailyAutomation {
 
     DailyAutomation(XposedModule module, SharedPreferences prefs, ClassLoader loader) {
         this.module = module; this.prefs = prefs; this.loader = loader;
+        taskClient = new HuyaTaskClient(loader);
     }
 
     void onOpen(Context current) {
@@ -127,7 +137,11 @@ final class DailyAutomation {
         if (!syncRegistered) {
             syncReceiver = new BroadcastReceiver() {
                 @Override public void onReceive(Context sender, Intent intent) {
-                    if (SYNC_LOGS.equals(intent.getAction())) requestLogSync();
+                    if (SYNC_LOGS.equals(intent.getAction())) {
+                        try { updateTaskSnapshotScope(loggedInUid()); }
+                        catch (ReflectiveOperationException | RuntimeException failure) { updateTaskSnapshotScope(0); }
+                        requestLogSync();
+                    }
                 }
             };
             IntentFilter filter = new IntentFilter(SYNC_LOGS);
@@ -141,6 +155,8 @@ final class DailyAutomation {
         if (!openedLogged) {
             openedLogged = true;
             log("每日任务", "", "检查", "收到虎牙打开事件，正在等待登录状态");
+        } else if (syncFailureLogged) {
+            requestLogSync();
         }
         if (polling) return;
         polling = true;
@@ -150,6 +166,7 @@ final class DailyAutomation {
     private void pollLogin(int attempt) {
         try {
             long uid = loggedInUid();
+            updateTaskSnapshotScope(uid);
             if (uid != account) {
                 giftCheck = null;
                 if (giftRound != null) continueGiftRound(giftRound);
@@ -157,18 +174,17 @@ final class DailyAutomation {
             if (uid > 0) {
                 polling = false;
                 if (giftCheck == null && afterBadges == null && giftAllowed()
-                        && dayKey(uid).equals(activeDay)) {
-                    runOnce(uid);
+                        && callbacksInstalled && dayKey(uid).equals(activeDay) && !nativeTasks.isIdle()) {
+                    startGiftChecks(uid, activeDay);
                 }
-                try { nativeTasks.onReady(uid, () -> handler.postDelayed(
-                        () -> runOnce(uid), requestInterval)); }
-                catch (RuntimeException | LinkageError failure) {
-                    log("虎牙任务中心", "", "失败", "新任务接口不可用，未影响原有每日任务");
+                if (nativeTasks.isIdle() && afterBadges == null) {
+                    pendingLogin = 0;
                     runOnce(uid);
-                }
+                } else if (uid != phaseAccount) pendingLogin = uid;
                 return;
             }
         } catch (ReflectiveOperationException | RuntimeException failure) {
+            updateTaskSnapshotScope(0);
             if (attempt == 29) log("每日任务", "", "失败", "登录接口不可用，未执行任务");
         }
         if (attempt < 29) handler.postDelayed(() -> pollLogin(attempt + 1), 1000L);
@@ -193,6 +209,20 @@ final class DailyAutomation {
         return uid + "/" + format.format(new Date());
     }
 
+    private void updateTaskSnapshotScope(long uid) {
+        String scope = uid > 0 ? dayKey(uid) : "";
+        if (scope.equals(taskSnapshotScope)) return;
+        try {
+            store.selectTaskScope(scope);
+        } catch (RuntimeException failure) {
+            scope = "";
+        }
+        taskSnapshotScope = scope;
+        nativeTasks.invalidateTaskLists();
+        pendingLogin = uid;
+        requestLogSync();
+    }
+
     private void runOnce(long uid) {
         try {
             if (loggedInUid() != uid) return;
@@ -200,62 +230,76 @@ final class DailyAutomation {
             return;
         }
         String day = dayKey(uid);
+        if (afterBadges != null || (day.equals(activeDay) && !isIdle())) return;
+        phaseAccount = uid;
         boolean first = seen.add(day);
         boolean sign = prefs != null && prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false);
         boolean gift = prefs != null && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false);
         if (!sign && !gift) {
             if (first && claim("disabled/" + day)) log("每日任务", "", "跳过", "两个自动任务开关均未开启");
+            startNativeTasks(uid, () -> {});
             return;
         }
-        if (!first && !gift) return;
         try { requestInterval = NativeTaskCatalog.intervalSeconds(
                 prefs.getString(GlassSettings.KEY_TASK_INTERVAL, "30")) * 1000L; }
         catch (IllegalArgumentException failure) {
             log("配置", "", "失败", "执行间隔无效，未执行每日任务");
             return;
         }
-        if (!first && day.equals(activeDay)) {
-            if (callbacksInstalled && afterBadges == null) startGiftChecks(uid, day);
-            return;
+        if (!day.equals(activeDay)) {
+            account = uid;
+            activeDay = day;
+            badges.clear();
+            giftRooms.clear();
+            attemptedGiftRooms.clear();
+            giftActive = false;
+            giftCheck = null;
+            giftRound = null;
+            requests.clear();
+            for (GiftLimit limit : guardedGifts.values()) limit.blocked = true;
+            grainBudget = -1;
         }
-        boolean runSign = first && sign && claim("sign/" + day);
-        if (!runSign && !gift) {
-            log("每日任务", "", "跳过", "今日已触发过，防止重复执行；未确认结果请查看之前的日志");
-            return;
-        }
-        account = uid;
-        activeDay = day;
-        badges.clear();
-        giftRooms.clear();
-        attemptedGiftRooms.clear();
-        giftActive = false;
-        giftCheck = null;
-        giftRound = null;
-        afterBadges = null;
-        requests.clear();
-        for (GiftLimit limit : guardedGifts.values()) limit.blocked = true;
-        grainBudget = -1;
-        signed = 0;
-        alreadySigned = 0;
-        failed = 0;
         if (first) log("每日任务", "", "开始", "今日首次打开，登录已就绪");
+        Runnable nativePhase = () -> startNativeTasks(uid, () -> {
+            if (gift && giftAllowed()) startGiftChecks(uid, day);
+        });
         try {
-            installCallbacks();
-            Runnable gifts = () -> {
-                if (gift) startGiftChecks(uid, day);
-                else log("免费虎粮", "", "跳过", "功能未开启");
-            };
+            boolean runSign = sign && !store.hasClaim("badge-tasks/" + day);
+            if (runSign || gift) installCallbacks();
             if (runSign) {
-                afterBadges = gifts;
+                signed = 0;
+                alreadySigned = 0;
+                failed = 0;
+                afterBadges = nativePhase;
                 fetchBadges();
             } else {
-                log("粉丝牌打卡", "", "跳过", sign ? "今日已触发过，不重复执行" : "功能未开启");
-                gifts.run();
+                nativePhase.run();
             }
         } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
             log("每日任务", "", "失败", "接口初始化失败：" + failure.getClass().getSimpleName());
-            finishBadges();
+            if (afterBadges == null) startNativeTasks(uid, () -> {});
+            else finishBadges();
         }
+    }
+
+    private void startNativeTasks(long uid, Runnable finished) {
+        try {
+            if (loggedInUid() == uid) {
+                nativeTasks.onReady(uid, () -> handler.postDelayed(finished, requestInterval));
+                return;
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
+            log("虎牙任务中心", "", "失败", "任务中心接口不可用");
+            finished.run();
+        }
+        resumePendingLogin();
+    }
+
+    void resumePendingLogin() {
+        if (pendingLogin == 0 || afterBadges != null || !nativeTasks.isIdle()) return;
+        long uid = pendingLogin;
+        pendingLogin = 0;
+        runOnce(uid);
     }
 
     private boolean claim(String key) {
@@ -285,9 +329,10 @@ final class DailyAutomation {
         boolean failed = false;
         try {
             while (logsDirty.getAndSet(false)) {
-                ArrayList<Bundle> tasks = store.tasks();
+                String scope = taskSnapshotScope;
+                ArrayList<Bundle> tasks = store.tasks(scope);
                 Bundle taskBatch = new Bundle();
-                taskBatch.putParcelableArrayList("tasks", tasks);
+                taskBatch.putParcelableArrayList("tasks", scope.equals(taskSnapshotScope) ? tasks : new ArrayList<>());
                 context.getContentResolver().call(TaskLogProvider.URI, "import_tasks", null, taskBatch);
                 ArrayList<Bundle> events = store.events();
                 for (int start = 0; start < events.size(); start += 50) {
@@ -301,9 +346,9 @@ final class DailyAutomation {
             syncFailureLogged = false;
         } catch (RuntimeException failure) {
             failed = true;
-            module.log(Log.WARN, "FuckAD", "Log display sync unavailable; records remain in Huya", failure);
             if (!syncFailureLogged) {
                 syncFailureLogged = true;
+                module.log(Log.WARN, "FuckAD", "Log display sync unavailable; records remain in Huya", failure);
                 try { store.append("日志同步", "", "失败", "模块日志页暂不可用："
                         + failure.getClass().getSimpleName() + "，原始记录保留在虎牙本地"); }
                 catch (RuntimeException journalFailure) {
@@ -354,16 +399,14 @@ final class DailyAutomation {
             if (pending.round != null && !continueGiftRound(pending.round)) return;
             if (account != pending.account || loggedInUid() != pending.account) {
                 log(pending.task, pending.target, "取消", "账号已退出或切换，不继续执行");
-                if (pending.round == null && account == pending.account) {
-                    badges.clear();
-                    afterBadges = null;
-                }
+                if (pending.round == null && account == pending.account) finishBadges();
                 return;
             }
             if (timedOut) log(pending.task, pending.target, "结果未确认", "请求超时，不自动重复发送");
             pending.callback.accept(response);
-        } catch (ReflectiveOperationException | RuntimeException failure) {
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
             log(pending.task, pending.target, "失败", "处理回执失败：" + failure.getClass().getSimpleName());
+            if (pending.round == null && account == pending.account) finishBadges();
         }
     }
 
@@ -398,7 +441,7 @@ final class DailyAutomation {
             result.accept(null);
             return;
         }
-        if ("粉丝牌打卡".equals(task) && !prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false)) {
+        if (round == null && !badgeTasksActive(activeDay)) {
             result.accept(null);
             return;
         }
@@ -444,15 +487,22 @@ final class DailyAutomation {
                 }
                 Set<Long> unique = new HashSet<>();
                 for (Object badge : (List<?>) items) {
-                    Object channel = value(badge, "tChannelInfo");
-                    long uid = channel == null ? 0 : ((Number) value(channel, "lUid")).longValue();
+                    long uid = 0;
+                    try {
+                        Object channel = badge == null ? null : value(badge, "tChannelInfo");
+                        Object rawUid = channel == null ? null : value(channel, "lUid");
+                        if (rawUid instanceof Number) uid = ((Number) rawUid).longValue();
+                    } catch (ReflectiveOperationException failure) {
+                        // One malformed entry should not block the remaining badges.
+                    }
                     if (uid <= 0 || uid == account) {
-                        log("粉丝牌打卡", "", "跳过", "粉丝牌缺少有效的主播信息");
+                        failed++;
+                        log(BADGE_SIGN, "", "跳过", "粉丝牌缺少有效的主播信息");
                     } else if (unique.add(uid)) badges.add(uid);
                 }
                 log("粉丝牌列表", "", "成功", "获取 " + badges.size() + " 个已有粉丝牌");
                 nextBadge();
-            } catch (ReflectiveOperationException failure) {
+            } catch (ReflectiveOperationException | RuntimeException failure) {
                 log("粉丝牌列表", "", "失败", "列表结构不匹配，未执行打卡");
                 finishBadges();
             }
@@ -460,53 +510,177 @@ final class DailyAutomation {
     }
 
     private void nextBadge() {
-        if (!prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false)) {
-            badges.clear();
-            log("粉丝牌打卡", "", "取消", "功能已关闭，停止剩余打卡");
-        }
-        Long presenter = badges.poll();
-        if (presenter == null) {
-            log("粉丝牌打卡", "", "结束", "成功 " + signed + "，已打卡 " + alreadySigned
-                    + "，失败或未确认 " + failed);
+        if (!badgeTasksActive(activeDay)) {
             finishBadges();
             return;
         }
+        Long presenter = badges.poll();
+        if (presenter == null) {
+            if (failed == 0) claim("badge-tasks/" + activeDay);
+            log(BADGE_SIGN, "", "结束", "成功 " + signed + "，已打卡 " + alreadySigned
+                    + "，粉丝牌任务失败或待确认 " + failed);
+            finishBadges();
+            return;
+        }
+        String day = activeDay;
+        Runnable welfare = () -> checkBadgeWelfare(day, presenter);
+        String target = "主播 " + presenter;
         try {
-            if (loggedInUid() != account) {
-                log("粉丝牌打卡", "", "取消", "账号发生变化，剩余任务不执行");
-                finishBadges();
-                return;
-            }
-            Object body = loader.loadClass("com.duowan.HUYA.FansSignReq").getConstructor().newInstance();
-            body.getClass().getField("tId").set(body, userId());
-            body.getClass().getField("lPid").setLong(body, presenter);
-            request("com.duowan.kiwi.inputbar.impl.wup.InputBarWupFunction$SetFansSign", body,
-                    "粉丝牌打卡", "主播 " + presenter, response -> {
+            Object body = badgeRequest("GetFansSignReq", presenter);
+            request("com.duowan.kiwi.badge.wupfunction.BadgeWupFunction$GetFansSign", body,
+                    "粉丝牌打卡状态", target, response -> {
                 try {
                     if (response != null && ((Number) value(response, "iCode")).intValue() == 0) {
-                        signed++;
-                        log("粉丝牌打卡", "主播 " + presenter, "成功", "收到服务端成功回执");
-                    } else if (response != null && ((Number) value(response, "iCode")).intValue() == -1
-                            && "请勿重复打卡".equals(value(response, "sMsg"))) {
-                        alreadySigned++;
-                        log("粉丝牌打卡", "主播 " + presenter, "已打卡", "服务端确认今日已经打卡，不再重复提交");
-                    } else {
-                        failed++;
-                        log("粉丝牌打卡", "主播 " + presenter, "未完成",
-                                response == null ? "无有效回执，不重复提交" : "服务端返回代码 "
-                                        + value(response, "iCode") + "：" + value(response, "sMsg"));
+                        Object status = value(response, "tSign");
+                        if (status != null) {
+                            long flags = ((Number) value(status, "lSignInFlag")).longValue();
+                            int position = ((Number) value(status, "iPos")).intValue();
+                            if (flags == 0 || (position >= 1 && position <= 32)) {
+                                if (flags != 0 && (flags & (1L << (position - 1))) != 0) {
+                                    badgeAlreadySigned(target);
+                                    welfare.run();
+                                } else signBadge(presenter, target, welfare);
+                                return;
+                            }
+                        }
                     }
-                } catch (ReflectiveOperationException failure) {
-                    failed++;
-                    log("粉丝牌打卡", "主播 " + presenter, "失败", "回执结构不匹配");
+                } catch (ReflectiveOperationException | RuntimeException failure) {
+                    log(BADGE_SIGN, target, "失败", "打卡状态结构不匹配");
                 }
-                handler.postDelayed(this::nextBadge, 1200L);
+                failed++;
+                log(BADGE_SIGN, target, "未完成", "未取得有效的打卡状态");
+                welfare.run();
             });
         } catch (ReflectiveOperationException failure) {
             failed++;
-            log("粉丝牌打卡", "主播 " + presenter, "失败", "请求接口不匹配");
-            handler.postDelayed(this::nextBadge, 1200L);
+            log(BADGE_SIGN, target, "失败", "打卡状态接口不匹配");
+            welfare.run();
         }
+    }
+
+    private Object badgeRequest(String name, long presenter) throws ReflectiveOperationException {
+        Object body = loader.loadClass("com.duowan.HUYA." + name).getConstructor().newInstance();
+        body.getClass().getField("tId").set(body, userId());
+        body.getClass().getField("lPid").setLong(body, presenter);
+        return body;
+    }
+
+    private void signBadge(long presenter, String target, Runnable finished) {
+        try {
+            Object body = badgeRequest("FansSignReq", presenter);
+            String attempt = "badge-sign/" + activeDay + "/" + presenter;
+            if (!claim(attempt)) {
+                failed++;
+                log(BADGE_SIGN, target, "未确认", "已提交过，当前状态未确认，不重复打卡");
+                finished.run();
+                return;
+            }
+            request("com.duowan.kiwi.inputbar.impl.wup.InputBarWupFunction$SetFansSign", body,
+                    BADGE_SIGN, target, response -> {
+                try {
+                    if (response != null && ((Number) value(response, "iCode")).intValue() == 0) {
+                        signed++;
+                        log(BADGE_SIGN, target, "成功", "收到服务端成功回执");
+                    } else if (response != null && ((Number) value(response, "iCode")).intValue() == -1
+                            && "请勿重复打卡".equals(value(response, "sMsg"))) {
+                        badgeAlreadySigned(target);
+                    } else {
+                        failed++;
+                        if (response == null) {
+                            log(BADGE_SIGN, target, "未完成", "无有效回执，下次先复核打卡状态");
+                        } else {
+                            Object message = value(response, "sMsg");
+                            if (!(message instanceof String)) throw new IllegalArgumentException("Invalid response message");
+                            store.release(attempt);
+                            log(BADGE_SIGN, target, "未完成", "服务端返回代码 "
+                                    + value(response, "iCode") + "：" + message);
+                        }
+                    }
+                } catch (ReflectiveOperationException | RuntimeException failure) {
+                    failed++;
+                    log(BADGE_SIGN, target, "失败", "回执结构不匹配");
+                }
+                finished.run();
+            });
+        } catch (ReflectiveOperationException failure) {
+            failed++;
+            log(BADGE_SIGN, target, "失败", "请求接口不匹配");
+            finished.run();
+        }
+    }
+
+    private void badgeAlreadySigned(String target) {
+        alreadySigned++;
+        log(BADGE_SIGN, target, "已打卡", "服务端确认今日已经打卡");
+    }
+
+    private boolean badgeTasksActive(String day) {
+        try {
+            return afterBadges != null && day.equals(dayKey(account))
+                    && prefs.getBoolean(GlassSettings.KEY_AUTO_SIGN, false) && loggedInUid() == account;
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            return false;
+        }
+    }
+
+    private void checkBadgeWelfare(String day, long presenter) {
+        String target = "主播 " + presenter;
+        badgeWelfareRequest(day, presenter, "queryFansGroupTaskInfo", 3, (body, code) -> {
+            Object welfare = body.get(7);
+            long state = welfare instanceof TaskWire.Struct ? ((TaskWire.Struct) welfare).number(0) : -1;
+            if (code != 0 || body.number(0) != 0 || body.number(1) != account
+                    || body.number(2) != presenter || state < 1 || state > GRAIN_CLAIMED) {
+                failed++;
+                log(BADGE_GRAIN, target, "未确认", "未取得有效的每日福利状态");
+            } else if (state == GRAIN_CLAIMABLE) {
+                badgeWelfareRequest(day, presenter, "operateFansBox", CLAIM_FANS_BOX, (reply, result) -> {
+                    if (result == 0 && reply.number(0) == 0 && reply.number(1) == presenter
+                            && reply.number(3) == GRAIN_CLAIMED && reply.number(5) == 10) {
+                        log(BADGE_GRAIN, target, "成功", "服务端确认领取 10 个虎粮");
+                    } else {
+                        failed++;
+                        log(BADGE_GRAIN, target, "未确认", "未取得成功回执，下次先复核领取状态");
+                    }
+                    nextBadge();
+                });
+                return;
+            } else if (state == GRAIN_CLAIMED) {
+                log(BADGE_GRAIN, target, "已领取", "服务端确认今日已经领取");
+            } else {
+                if (state == 2) failed++;
+                log(BADGE_GRAIN, target, "跳过", "每日福利暂不可领取");
+            }
+            nextBadge();
+        });
+    }
+
+    private void badgeWelfareRequest(String day, long presenter, String function, int requestFlag,
+                                     NativeTaskRunner.Reply reply) {
+        handler.postDelayed(() -> {
+            if (!badgeTasksActive(day)) {
+                finishBadges();
+                return;
+            }
+            if ("operateFansBox".equals(function) && !claim("badge-welfare/" + day + "/" + presenter)) {
+                reply.complete(new TaskWire.Struct(), -1);
+                return;
+            }
+            AtomicBoolean delivered = new AtomicBoolean();
+            NativeTaskRunner.Reply finish = (response, code) -> {
+                if (!delivered.compareAndSet(false, true)) return;
+                try {
+                    if (badgeTasksActive(day)) reply.complete(response, code);
+                    else finishBadges();
+                } catch (RuntimeException | LinkageError failure) {
+                    log(BADGE_GRAIN, "", "失败", "福利回执无法处理，结束本轮粉丝牌任务");
+                    finishBadges();
+                }
+            };
+            handler.postDelayed(() -> finish.complete(new TaskWire.Struct(), -1), 20000L);
+            taskClient.send(account, "wupui", function, new TaskWire.Struct()
+                    .field(1, presenter).field(2, requestFlag),
+                    (response, code) -> handler.post(() -> finish.complete(response, code)));
+        }, requestInterval);
     }
 
     private void startGiftChecks(long uid, String day) {
@@ -539,6 +713,12 @@ final class DailyAutomation {
         Map<Long, Integer> rooms = AutomationRules.parse(prefs.getString(GlassSettings.KEY_GIFT_ROOMS, ""));
         if (rooms.isEmpty()) log("免费虎粮", "", "跳过", "未配置直播间和数量");
         else {
+            if (store.hasClaim("dice-grain-started/" + day)) {
+                List<AutomationRules.GrainPart> plan = store.diceGrainPlan(day);
+                if (plan != null && AutomationRules.matchesGrainPlan(plan, rooms)) {
+                    for (AutomationRules.GrainPart part : plan) rooms.remove(part.room);
+                }
+            }
             for (Map.Entry<Long, Integer> room : rooms.entrySet()) {
                 if (!attemptedGiftRooms.contains(room.getKey())) giftRooms.add(room);
             }
@@ -654,8 +834,17 @@ final class DailyAutomation {
                         return;
                     }
                     long presenter = ((Number) value(notice, "lPresenterUid")).longValue();
-                    if ((diceGrainPart == null || diceGrainPart.number == 1)
-                            && store.hasClaim(dailyGiftKey(round, presenter))) {
+                    String key = dailyGiftKey(round, presenter);
+                    if (diceGrainPart != null) {
+                        if (store.hasClaim(grainPartKey(key, diceGrainPart.number))) {
+                            finishAlreadySubmittedGrain(round, diceGrainPart);
+                            return;
+                        }
+                        if (!hasPreviousGrainAttempt(round, key, diceGrainPart)) {
+                            finishDiceGift(false, "无法确认上一笔的赠送对象，未继续赠送");
+                            return;
+                        }
+                    } else if (store.hasClaim(key)) {
                         log("免费虎粮", target, "跳过", "今日已提交过该主播的赠送");
                         attemptedGiftRooms.add(room.getKey());
                         nextGiftRoomLater(round, 1200L);
@@ -880,11 +1069,16 @@ final class DailyAutomation {
         guardedGifts.put(params, limit);
         String target = "直播间 " + room + " · " + count + " 个免费虎粮";
         Class<?> callbackType = loader.loadClass("com.duowan.kiwi.props.api.request.ISendGiftCallback");
+        AutomationRules.GrainPart part = diceGrainPart;
         final boolean[] finished = {false};
         Object callback = Proxy.newProxyInstance(loader, new Class<?>[]{callbackType}, (proxy, method, args) -> {
             if ("onResult".equals(method.getName())) {
-                Object result = args == null ? null : args[0];
+                Object result = args == null || args.length == 0 ? null : args[0];
                 handler.post(() -> {
+                    boolean success = result != null && result.getClass().getName().equals(
+                            "com.duowan.kiwi.props.api.request.SendGiftResult$Success");
+                    boolean recorded = !success || part == null || claim(
+                            AutomationRules.confirmedGrainPart(round.day, part.room, part.number));
                     if (finished[0]) return;
                     finished[0] = true;
                     limit.blocked = true;
@@ -892,16 +1086,20 @@ final class DailyAutomation {
                         log("免费虎粮", target, "结果未确认", "任务已中断，请核对原账号的赠送记录");
                         return;
                     }
-                    if (result != null && result.getClass().getName().equals(
-                            "com.duowan.kiwi.props.api.request.SendGiftResult$Success")) {
+                    if (success) {
                         grainBudget -= count;
                         log("免费虎粮", target, "成功", "收到虎牙送礼成功回执");
-                        finishDiceGift(true, "已收到 " + count + " 个免费虎粮的赠送回执，等待骰子任务进度复核");
+                        finishDiceGift(true, recorded
+                                ? "已收到 " + count + " 个免费虎粮的赠送回执，等待骰子任务进度复核"
+                                : "已收到赠送回执，回执记录写入失败，查询虎牙任务进度");
                     } else {
                         log("免费虎粮", target, "未完成", result == null ? "回执缺失" : result.getClass().getSimpleName());
+                        if (part != null) {
+                            finishDiceGift(true, "这笔赠送缺少成功回执，查询虎牙任务进度");
+                            return;
+                        }
                         skipRemainingGifts("前一笔赠送未成功，本轮停止后续赠送");
                         log("免费虎粮", "", "停止", "本次送礼未成功，保留剩余免费虎粮");
-                        finishDiceGift(false, "本次未收到免费虎粮成功回执，不领取骰子奖励");
                     }
                     nextGiftRoomLater(round, 1500L);
                 });
@@ -918,17 +1116,21 @@ final class DailyAutomation {
         if (giftService == null) throw new IllegalStateException("Gift service unavailable");
         if (!continueGiftRound(round)) return;
         String key = dailyGiftKey(round, presenter);
-        if (diceGrainPart != null && diceGrainPart.number > 1) {
-            String previous = diceGrainPart.number == 2 ? key
-                    : key + "/part/" + (diceGrainPart.number - 1);
-            if (!store.hasClaim(previous)) {
-                finishDiceGift(false, "当前主播没有上一笔赠送记录，停止拆分赠送");
+        if (part != null) {
+            if (!hasPreviousGrainAttempt(round, key, part)) {
+                finishDiceGift(false, "无法确认上一笔的赠送对象，未继续赠送");
                 return;
             }
-            key += "/part/" + diceGrainPart.number;
+            key = grainPartKey(key, part.number);
         }
-        if (!claim(key)) {
+        boolean reserved = part != null && part.number == 1
+                ? store.claimFirstGrainPart(key, round.day, part.room) : claim(key);
+        if (!reserved) {
             limit.blocked = true;
+            if (part != null && store.hasClaim(key)) {
+                finishAlreadySubmittedGrain(round, part);
+                return;
+            }
             log("免费虎粮", target, "跳过", "今日已经提交过该主播的赠送，不重复发送");
             nextGiftRoomLater(round, 1200L);
             return;
@@ -940,7 +1142,13 @@ final class DailyAutomation {
             if (!finished[0]) {
                 finished[0] = true;
                 limit.blocked = true;
-                if (giftRound == round) skipRemainingGifts("前一笔赠送结果未确认，本轮停止后续赠送");
+                if (giftRound != round) return;
+                if (part != null) {
+                    log("免费虎粮", target, "结果未确认", "等待回执超时，查询虎牙任务进度");
+                    finishDiceGift(true, "这笔赠送已提交，回执超时，查询虎牙任务进度");
+                    return;
+                }
+                skipRemainingGifts("前一笔赠送结果未确认，本轮停止后续赠送");
                 log("免费虎粮", target, "结果未确认", "等待回执超时，停止后续赠送，不自动重发");
             }
         }, 30000L);
@@ -948,6 +1156,31 @@ final class DailyAutomation {
 
     private String dailyGiftKey(GiftRound round, long presenter) {
         return "gift-send/" + round.day + "/" + presenter;
+    }
+
+    private static String grainPartKey(String giftKey, int number) {
+        return number == 1 ? giftKey : giftKey + "/part/" + number;
+    }
+
+    private boolean hasPreviousGrainAttempt(GiftRound round, String giftKey, AutomationRules.GrainPart part) {
+        int previous = part.number - 1;
+        return previous == 0 || (store.hasClaim(grainPartKey(giftKey, previous))
+                && (previous != 1 || ownsFirstGrainPart(round, part.room)));
+    }
+
+    private void finishAlreadySubmittedGrain(GiftRound round, AutomationRules.GrainPart part) {
+        if (part.number > 1 || ownsFirstGrainPart(round, part.room)) {
+            finishDiceGift(true, "该笔赠送已提交，查询虎牙任务进度");
+        } else finishDiceGift(false, "已有赠送记录，无法确认是否属于拆分计划，保留剩余额度");
+    }
+
+    private boolean ownsFirstGrainPart(GiftRound round, long room) {
+        if (store.hasClaim("dice-grain-room/" + round.day + "/" + room)
+                || store.hasClaim(AutomationRules.confirmedGrainPart(round.day, room, 1))) return true;
+        if (!store.hasClaim("dice-grain-started/" + round.day)) return false;
+        // Older journals only identify the first part when the whole split belonged to one room.
+        List<AutomationRules.GrainPart> saved = store.diceGrainPlan(round.day);
+        return saved != null && saved.size() == 3 && saved.stream().allMatch(part -> part.room == room);
     }
 
     private void skipRemainingGifts(String reason) {

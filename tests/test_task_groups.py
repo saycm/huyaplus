@@ -118,13 +118,16 @@ class TaskGroupTests(unittest.TestCase):
     def test_stale_catalog_rows_are_discarded_without_touching_claims(self):
         source = ROOT / 'tools/huya-compat-src/io/github/saycm/huyaplus'
         store = (source / 'LocalTaskStore.java').read_text(encoding='utf-8')
-        self.assertIn('"fuckad_daily_tasks.db", null, 4', store)
+        self.assertIn('"fuckad_daily_tasks.db", null, 6', store)
         self.assertIn('if (oldVersion < 3) db.delete("tasks", null, null);', store)
         self.assertNotIn('if (oldVersion < 3) db.delete("runs"', store)
+        self.assertIn('if (oldVersion < 5) createGiftPlans(db);', store)
+        self.assertIn('if (oldVersion < 6) {\n            createTaskScope(db);\n'
+                      '            db.delete("tasks", null, null);', store)
+        self.assertIn('WHERE slot = 1 AND scope = ?', store)
         provider = (source / 'TaskLogProvider.java').read_text(encoding='utf-8')
-        self.assertIn('"daily_tasks.db", null, 5', provider)
-        self.assertIn('if (oldVersion < 4) db.delete("tasks", null, null);', provider)
-        for text, version in ((store, 4), (provider, 5)):
-            self.assertIn(f'else if (oldVersion < {version}) db.delete("tasks", "task_key LIKE ?", '
-                          'new String[]{"dice/%"});', text)
+        self.assertIn('"daily_tasks.db", null, 6', provider)
+        self.assertIn('if (oldVersion < 6) db.delete("tasks", null, null);', provider)
+        self.assertIn('WHERE updated >= ? AND updated < ?', provider)
+        self.assertIn('ZoneId.of("Asia/Shanghai")', provider)
         self.assertIn('entry.getInt("catalog_version", 0) != NativeTaskCatalog.VERSION', provider)

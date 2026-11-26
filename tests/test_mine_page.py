@@ -125,8 +125,8 @@ public class MinePageTest {
    if(entry.group==0)shortcuts.add(entry.title);
   }
   check(shortcuts.equals(Arrays.asList("我的关注","历史/收藏","我的订单","我的预约",
-    "粉丝徽章","我的守护","虎牙贵族","创作中心")),
-   "The eight shortcuts need individual switches in display order");
+    "粉丝徽章","我的守护","虎牙贵族","创作中心","佣金兑换")),
+   "All shortcuts, including commission redemption, need individual switches");
   Set<String> keys=new HashSet<>();
   for(GlassSettings.MineEntry entry:GlassSettings.MineEntry.values()) {
    check(keys.add(entry.key),"Each switch must have its own key");

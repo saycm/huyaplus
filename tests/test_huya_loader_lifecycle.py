@@ -56,6 +56,7 @@ public class ContentResolver {
   throw new IllegalArgumentException("provider unavailable");
  }
  public Bundle call(android.net.Uri uri,String method,String arg,Bundle extras){return null;}
+ public void notifyChange(android.net.Uri uri,android.database.ContentObserver observer){}
 }
 """,
     "android/os/Bundle.java": """
@@ -447,6 +448,7 @@ public class Handler {
  public Handler(Looper looper){}
  public boolean postDelayed(Runnable task,long delay){return callbacks.add(task);}
  public boolean post(Runnable task){return callbacks.add(task);}
+ public void removeCallbacks(Runnable task){callbacks.remove(task);}
 }
 """,
     "android/util/Pair.java": """
@@ -480,7 +482,11 @@ public class DefaultQualityHookTest {
  }
  public static class StreamPanel {
   int picks;
+  final RateAdapter mRateAdapter=new RateAdapter();
   public void onClickRateItem(Rate rate){picks++;}
+ }
+ public static class RateAdapter {
+  public long getSelectedId(){return 2000;}
  }
  public static class LineData {
   public void setMultiLineInfo(List<Rate> rates,Runnable duringUpdate,int unused){
@@ -490,9 +496,10 @@ public class DefaultQualityHookTest {
  }
  public static class Rate {
   final int bitrate;
+  public int iEnable=1;
   Rate(int bitrate){this.bitrate=bitrate;}
   public int getBitrate(){return bitrate;}
-    public String getDisplayName(){return bitrate==0?"蓝光":bitrate==8000?"蓝光 8M":"超清";}
+  public String getDisplayName(){return bitrate==0?"蓝光":bitrate>=8000?"蓝光 "+bitrate/1000+"M":"超清";}
   public int getHEVCBitRate(){return bitrate==8000?7200:0;}
  }
  public static class Line {
@@ -502,6 +509,8 @@ public class DefaultQualityHookTest {
  }
  public static class MultiLineModule {
   int failures,requests,selected;
+  int rejectedRate=-1;
+  final List<SwitchListener> listeners=new ArrayList<>();
   boolean inChannel=true,validLine=true;
   long playId=17,prePlayerId;
   public boolean isInChannel(){return inChannel;}
@@ -511,12 +520,16 @@ public class DefaultQualityHookTest {
     public int getOriginalBitrate(long playId){return playId==17?3000:0;}
   public int getLineIndex(){return 1;}
   public Pair<List<Line>,List<Line>> getLines(){return new Pair<>(List.of(line),List.of());}
+  public void addMultiStreamSwitchListener(SwitchListener listener){listeners.add(listener);}
+  public void releaseMultiStreamSwitchListener(SwitchListener listener){listeners.remove(listener);}
   public void switchLineTo(int lineIndex,int bitrate,boolean manual){
    requests++;
    if(failures>0){failures--;throw new IllegalStateException("temporary failure");}
    selected=bitrate;
+   for(SwitchListener listener:listeners)listener.onLineSwitchResult(bitrate!=rejectedRate,"");
   }
  }
+ public interface SwitchListener {void onLineSwitchResult(boolean success,String message);}
  public static class LiveComponent {
   static boolean registered=true;
   public MultiLineModule getMultiLineModule(){
@@ -585,6 +598,7 @@ public class DefaultQualityHookTest {
      case "com.duowan.kiwi.live.model.ABSLine" -> Line.class;
      case "com.duowan.kiwi.live.api.ILiveComponent" -> LiveComponent.class;
      case "com.duowan.kiwi.live.api.multiline.IMultiLineModule" -> MultiLineModule.class;
+     case "com.duowan.kiwi.live.api.multiline.IMultiStreamSwitchListener" -> SwitchListener.class;
      case "com.duowan.kiwi.player.ILivePlayerComponent" -> PlayerComponent.class;
      case "com.duowan.kiwi.player.ILivePlayerModule" -> PlayerModule.class;
      case "com.duowan.kiwi.player.ILivePlayer" -> Player.class;
@@ -687,8 +701,30 @@ public class DefaultQualityHookTest {
     dispatch();
     dispatch();
     check(module.requests==2&&module.selected==2000,"Retry a failed switch and apply the target");
+    dispatch();
     update(target,null);
     check(Handler.callbacks.isEmpty(),"Do not switch again once successful");
+   }
+   case "enabled-and-fallback" -> {
+    preference=-2;
+    Rate unavailable=new Rate(30000);
+    unavailable.iEnable=0;
+    module.rejectedRate=15000;
+    update(List.of(unavailable,new Rate(15000),new Rate(8000)),null);
+    dispatch();
+    check(module.requests==1&&module.selected==15000,"Skip the highest disabled rate");
+    dispatch();
+    dispatch();
+    check(module.requests==2&&module.selected==8000,"Try the next playable rate after a negative receipt");
+    dispatch();
+    check(module.listeners.isEmpty()&&Handler.callbacks.isEmpty(),"Do not keep switching after confirmation");
+   }
+   case "manual-no-op" -> {
+    update(target,null);
+    StreamPanel panel=new StreamPanel();
+    XposedModule.call(panel,"onClickRateItem",new Class<?>[]{Rate.class},new Rate(2000));
+    dispatch();
+    check(panel.picks==1&&module.requests==1,"Clicking an already selected row must not cancel the automatic attempt");
    }
    case "bounded" -> {
     update(List.of(),null);
@@ -866,7 +902,7 @@ class HuyaLoaderLifecycleTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             quality_cases = [(case,) for case in (
-                "retry", "switch-error", "bounded", "stale", "manual", "follow",
+                "retry", "switch-error", "enabled-and-fallback", "manual-no-op", "bounded", "stale", "manual", "follow",
                 "notice", "notice-original", "swipe-ready")]
             quality_cases += [("retry", version) for version in ("13.5.62", "13.5.63")]
             for case in quality_cases:

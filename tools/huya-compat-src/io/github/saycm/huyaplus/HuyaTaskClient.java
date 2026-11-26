@@ -150,6 +150,8 @@ final class HuyaTaskClient {
                     && "reportUserTaskClickEvent".equals(function);
             boolean meal = "webActUI".equals(servant)
                     && ("getUserTaskDetailByTaskId".equals(function) || "receivePrize".equals(function));
+            boolean badge = "wupui".equals(servant)
+                    && ("queryFansGroupTaskInfo".equals(function) || "operateFansBox".equals(function));
             boolean dice = "wupui".equals(servant)
                     && ("getJumpGameModule".equals(function)
                     || "getCommAdPannel".equals(function)
@@ -157,7 +159,7 @@ final class HuyaTaskClient {
                     || "getJumpGameTaskList".equals(function)
                     || "claimJumpGameTaskReward".equals(function)
                     || "rollJumpGameDice".equals(function));
-            if (!query && !reward && !userReward && !progress && !coop && !market && !dice && !meal) {
+            if (!query && !reward && !userReward && !progress && !coop && !market && !dice && !meal && !badge) {
                 throw new IllegalArgumentException("Unsupported task endpoint");
             }
             verifySession(account);

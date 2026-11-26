@@ -17,7 +17,7 @@ final class LocalTaskStore extends SQLiteOpenHelper {
     LocalTaskStore(Context context) { this(context, null); }
 
     LocalTaskStore(Context context, Runnable onAppend) {
-        super(context, "fuckad_daily_tasks.db", null, 4);
+        super(context, "fuckad_daily_tasks.db", null, 6);
         this.onAppend = onAppend;
     }
 
@@ -26,18 +26,56 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT UNIQUE NOT NULL, "
                 + "time INTEGER NOT NULL, task TEXT NOT NULL, target TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL)");
         createTasks(db);
+        createGiftPlans(db);
+        createTaskScope(db);
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) createTasks(db);
         if (oldVersion < 3) db.delete("tasks", null, null);
         else if (oldVersion < 4) db.delete("tasks", "task_key LIKE ?", new String[]{"dice/%"});
+        if (oldVersion < 5) createGiftPlans(db);
+        if (oldVersion < 6) {
+            createTaskScope(db);
+            db.delete("tasks", null, null);
+        }
     }
 
     private void createTasks(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS tasks (task_key TEXT PRIMARY KEY, title TEXT NOT NULL, "
                 + "status TEXT NOT NULL, detail TEXT NOT NULL, updated INTEGER NOT NULL, "
                 + "sort_order INTEGER NOT NULL)");
+    }
+
+    private void createGiftPlans(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS gift_plans (day_key TEXT PRIMARY KEY, plan TEXT NOT NULL, "
+                + "created INTEGER NOT NULL)");
+    }
+
+    private void createTaskScope(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS task_scope (slot INTEGER PRIMARY KEY, scope TEXT NOT NULL)");
+    }
+
+    synchronized void selectTaskScope(String scope) {
+        SQLiteDatabase db = getWritableDatabase();
+        if (matchesTaskScope(db, scope)) return;
+        db.beginTransaction();
+        try {
+            db.delete("tasks", null, null);
+            ContentValues row = new ContentValues();
+            row.put("slot", 1);
+            row.put("scope", scope);
+            db.replaceOrThrow("task_scope", null, row);
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
+    }
+
+    private boolean matchesTaskScope(SQLiteDatabase db, String scope) {
+        if (scope == null || scope.isEmpty()) return false;
+        try (Cursor row = db.rawQuery("SELECT 1 FROM task_scope WHERE slot = 1 AND scope = ?",
+                new String[]{scope})) {
+            return row.moveToFirst();
+        }
     }
 
     synchronized boolean claim(String key) {
@@ -55,6 +93,58 @@ final class LocalTaskStore extends SQLiteOpenHelper {
                 "SELECT 1 FROM runs WHERE run_key = ?", new String[]{key})) {
             return row.moveToFirst();
         }
+    }
+
+    synchronized boolean claimFirstGrainPart(String giftKey, String day, long room) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            if (!claim(giftKey) || !claim("dice-grain-room/" + day + "/" + room)) return false;
+            claim("dice-grain-started/" + day);
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    synchronized void release(String key) {
+        getWritableDatabase().delete("runs", "run_key = ?", new String[]{key});
+    }
+
+    synchronized List<AutomationRules.GrainPart> diceGrainPlan(String day) {
+        try (Cursor row = getReadableDatabase().rawQuery(
+                "SELECT plan FROM gift_plans WHERE day_key = ?", new String[]{day})) {
+            if (!row.moveToFirst()) return null;
+            List<AutomationRules.GrainPart> plan = new ArrayList<>(3);
+            for (String line : row.getString(0).split("\n")) {
+                String[] part = line.split(",");
+                plan.add(new AutomationRules.GrainPart(Long.parseLong(part[0]), Integer.parseInt(part[1]),
+                        Integer.parseInt(part[2]), Integer.parseInt(part[3])));
+            }
+            return plan;
+        }
+    }
+
+    synchronized List<AutomationRules.GrainPart> saveDiceGrainPlan(String day,
+                                                                List<AutomationRules.GrainPart> plan) {
+        if (plan.isEmpty()) return plan;
+        StringBuilder encoded = new StringBuilder();
+        for (AutomationRules.GrainPart part : plan) {
+            encoded.append(part.room).append(',').append(part.count).append(',')
+                    .append(part.number).append(',').append(part.remaining).append('\n');
+        }
+        long now = System.currentTimeMillis();
+        ContentValues row = new ContentValues();
+        row.put("day_key", day);
+        row.put("plan", encoded.toString());
+        row.put("created", now);
+        SQLiteDatabase db = getWritableDatabase();
+        db.insertWithOnConflict("gift_plans", null, row, SQLiteDatabase.CONFLICT_IGNORE);
+        db.delete("gift_plans", "created < ?", new String[]{Long.toString(now - 35L * 86400000L)});
+        List<AutomationRules.GrainPart> saved = diceGrainPlan(day);
+        if (saved == null) throw new IllegalStateException("Gift plan was not saved");
+        return saved;
     }
 
     synchronized void append(String task, String target, String state, String detail) {
@@ -87,8 +177,9 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         return entries;
     }
 
-    synchronized void replaceTasks(List<NativeTaskCatalog.Task> tasks) {
+    synchronized void replaceTasks(String scope, List<NativeTaskCatalog.Task> tasks) {
         SQLiteDatabase db = getWritableDatabase();
+        if (!matchesTaskScope(db, scope)) return;
         long updated = System.currentTimeMillis();
         db.beginTransaction();
         try {
@@ -111,8 +202,9 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         if (onAppend != null) onAppend.run();
     }
 
-    synchronized void replaceDiceTasks(List<DiceTaskCatalog.Task> tasks) {
+    synchronized void replaceDiceTasks(String scope, List<DiceTaskCatalog.Task> tasks) {
         SQLiteDatabase db = getWritableDatabase();
+        if (!matchesTaskScope(db, scope)) return;
         long updated = System.currentTimeMillis();
         db.beginTransaction();
         try {
@@ -133,9 +225,11 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         if (onAppend != null) onAppend.run();
     }
 
-    synchronized ArrayList<Bundle> tasks() {
+    synchronized ArrayList<Bundle> tasks(String scope) {
         ArrayList<Bundle> entries = new ArrayList<>();
-        try (Cursor rows = getReadableDatabase().rawQuery(
+        SQLiteDatabase db = getReadableDatabase();
+        if (!matchesTaskScope(db, scope)) return entries;
+        try (Cursor rows = db.rawQuery(
                 "SELECT task_key,title,status,detail,updated FROM tasks ORDER BY sort_order", null)) {
             while (rows.moveToNext()) {
                 Bundle entry = new Bundle();

@@ -9,17 +9,39 @@ from test_huya_loader_lifecycle import EXE, JDK, ROOT, SDK, SOURCES
 
 
 FIXTURES = {
+    "android/content/res/Configuration.java": """
+package android.content.res;
+public class Configuration {
+ public static final int ORIENTATION_PORTRAIT=1, ORIENTATION_LANDSCAPE=2;
+ public int orientation=ORIENTATION_PORTRAIT;
+}
+""",
+    "android/content/res/Resources.java": """
+package android.content.res;
+public class Resources {
+ private final Configuration configuration=new Configuration();
+ public Configuration getConfiguration(){return configuration;}
+ public int getIdentifier(String name,String type,String packageName){return 1;}
+}
+""",
     "android/view/ViewParent.java": """
 package android.view;
 public interface ViewParent { default ViewParent getParent(){return null;} }
 """,
     "android/view/View.java": """
 package android.view;
+import android.content.res.Resources;
 public class View {
- public static final int VISIBLE=0,GONE=8;
+ public static final int VISIBLE=0,INVISIBLE=4,GONE=8;
+ private final Resources resources=new Resources();
  private int visibility;
  private ViewParent parent;
  private OnAttachStateChangeListener listener;
+ private OnLayoutChangeListener layoutListener;
+ public View child;
+ public interface OnLayoutChangeListener {
+  void onLayoutChange(View view,int l,int t,int r,int b,int oldL,int oldT,int oldR,int oldB);
+ }
  public interface OnAttachStateChangeListener {
   void onViewAttachedToWindow(View view);
   void onViewDetachedFromWindow(View view);
@@ -28,8 +50,14 @@ public class View {
  public int getVisibility(){return visibility;}
  public ViewParent getParent(){return parent;}
  public android.content.Context getContext(){return null;}
- public <T extends View> T findViewById(int id){return null;}
+ @SuppressWarnings("unchecked") public <T extends View> T findViewById(int id){return (T) child;}
  public <T extends View> T findViewWithTag(Object tag){return null;}
+ public Resources getResources(){return resources;}
+ public View getRootView(){return this;}
+ public ViewTreeObserver getViewTreeObserver(){return null;}
+ public boolean post(Runnable action){return true;}
+ public void addOnLayoutChangeListener(OnLayoutChangeListener value){layoutListener=value;}
+ public void dispatchLayout(){if(layoutListener!=null) layoutListener.onLayoutChange(this,0,0,1,1,0,0,0,0);}
  public void setTag(Object tag){}
  public interface OnClickListener { void onClick(View view); }
  public void setOnClickListener(OnClickListener listener){}

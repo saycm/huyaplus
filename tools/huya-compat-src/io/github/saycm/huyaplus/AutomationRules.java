@@ -70,6 +70,20 @@ public final class AutomationRules {
         return plan;
     }
 
+    static String confirmedGrainPart(String day, long room, int number) {
+        return "dice-grain-confirmed/" + day + "/" + room + "/" + number;
+    }
+
+    static boolean matchesGrainPlan(List<GrainPart> plan, Map<Long, Integer> rooms) {
+        Map<Long, Integer> planned = new LinkedHashMap<>();
+        for (GrainPart part : plan) {
+            int amount = part.count == ALL_FREE_GRAIN ? ALL_FREE_GRAIN
+                    : planned.getOrDefault(part.room, 0) + part.count;
+            planned.put(part.room, amount);
+        }
+        return planned.equals(rooms);
+    }
+
     public static Map<Long, Integer> parse(String text) {
         Map<Long, Integer> rooms = new LinkedHashMap<>();
         Long remainderRoom = null;
