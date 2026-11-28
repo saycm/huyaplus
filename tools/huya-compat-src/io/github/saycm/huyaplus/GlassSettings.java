@@ -34,8 +34,7 @@ public final class GlassSettings {
     static boolean defaultEnabled(String key) {
         return !KEY_VIP_4K.equals(key)
                 && !KEY_RECOMMEND_VIDEO.equals(key)
-                && !KEY_LIVE_AD_BANNER.equals(key)
-                && !KEY_LIVE_AD_FLOAT.equals(key);
+                && !KEY_LIVE_AD_BANNER.equals(key);
     }
 
     enum NavigationEntry {

@@ -12,6 +12,7 @@ final class NativeTaskRunner {
     interface Host {
         boolean enabled();
         long uid();
+        default long now() { return System.currentTimeMillis(); }
         boolean claim(String key);
         boolean taskEnabled(NativeTaskCatalog.Task task);
         default List<NativeTaskCatalog.Task> readTasks(TaskWire.Struct body) {
@@ -28,6 +29,7 @@ final class NativeTaskRunner {
     private final Runnable finished;
     private final ArrayDeque<NativeTaskCatalog.Task> tasks = new ArrayDeque<>();
     private long account;
+    private long rewardHour;
     private String day;
     private boolean stopped, waiting, actionWaiting, started;
     private int requestId, actionId;
@@ -45,6 +47,7 @@ final class NativeTaskRunner {
     void start(long uid, String date) {
         if (started) return;
         started = true; account = uid; day = date;
+        rewardHour = host.now() / 3600000L;
         if (!active()) return;
         host.log("任务中心", "开始", "读取虎牙任务列表，仅执行已开启且具备静默能力的任务");
         send("任务列表", "wupui", "getLiveBoxUserGrowthPage",
@@ -249,9 +252,15 @@ final class NativeTaskRunner {
             next();
             return;
         }
+        if (task.isHourlyReward() && host.now() / 3600000L != rewardHour) {
+            host.log(task.title, "跳过", "整点已变化，等待重新查询服务端任务状态");
+            next();
+            return;
+        }
         String key = "task-reward/" + account + "/" + day + "/" + task.key();
+        if (task.isHourlyReward()) key += "/hour/" + rewardHour;
         if (!host.claim(key)) {
-            host.log(task.title, "跳过", "今日已提交过，结果不明时不重复领取");
+            host.log(task.title, "跳过", "已提交过，结果不明时不重复领取");
             next();
             return;
         }

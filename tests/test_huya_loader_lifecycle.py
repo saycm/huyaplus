@@ -12,9 +12,48 @@ JDK = Path(os.environ["JAVA_HOME"])
 EXE = ".exe" if os.name == "nt" else ""
 
 SOURCES = {
+    "android/net/Uri.java": """
+package android.net;
+public class Uri {
+ private final String value;
+ private Uri(String value){this.value=value;}
+ public static Uri parse(String value){return new Uri(value);}
+ public String getScheme(){return java.net.URI.create(value).getScheme();}
+ public String toString(){return value;}
+ public Builder buildUpon(){return new Builder(value);}
+ public static class Builder {
+  private String value;
+  Builder(String value){this.value=value;}
+  public Builder appendPath(String path){value+="/"+path;return this;}
+  public Uri build(){return Uri.parse(value);}
+ }
+}
+""",
+    "android/app/Application.java": """
+package android.app;
+public class Application extends android.content.Context {
+ public static String getProcessName(){return "com.duowan.kiwi";}
+}
+""",
+    "android/content/Context.java": """
+package android.content;
+public class Context {
+ public static final int MODE_PRIVATE=0,RECEIVER_EXPORTED=2;
+ public Context getApplicationContext(){return this;}
+ public ClassLoader getClassLoader(){return getClass().getClassLoader();}
+ public android.content.pm.PackageManager getPackageManager(){return new android.content.pm.PackageManager();}
+ public android.content.res.Resources getResources(){return null;}
+ public ContentResolver getContentResolver(){return new ContentResolver();}
+ public SharedPreferences getSharedPreferences(String name,int mode){return null;}
+ public void startActivity(Intent intent){}
+ public Intent registerReceiver(BroadcastReceiver receiver,IntentFilter filter){return null;}
+ public Intent registerReceiver(BroadcastReceiver receiver,IntentFilter filter,int flags){return null;}
+ public void unregisterReceiver(BroadcastReceiver receiver){}
+}
+""",
     "android/app/Activity.java": """
 package android.app;
-public class Activity {
+public class Activity extends android.content.Context {
  public void onCreate(android.os.Bundle state){}
  public void onResume(){}
  public void startActivityForResult(android.content.Intent intent,int requestCode){}
@@ -782,7 +821,7 @@ public class DefaultQualityHookTest {
 
 QUALITY_SOURCES["RootGateTest.java"] = SOURCES.pop("RootGateTest.java")
 
-for automation_class in ("DailyAutomation", "TaskLogProvider", "LiveMenu", "RootAccess", "AutomationRules", "LocalTaskStore",
+for automation_class in ("DailyAutomation", "TaskLogProvider", "HookStatus", "LiveMenu", "RootAccess", "AutomationRules", "LocalTaskStore",
                          "NativeTaskAutomation", "NativeTaskRunner", "NativeTaskCatalog", "TaskWire", "HuyaTaskClient",
                          "DiceTaskRunner", "DiceTaskCatalog", "DiceMissionRunner", "WelfareSignRunner",
                          "HuyaComponents", "HuyaVersion"):

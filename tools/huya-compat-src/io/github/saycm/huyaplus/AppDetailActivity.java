@@ -31,6 +31,7 @@ public final class AppDetailActivity extends Activity {
     private SharedPreferences prefs;
     private AutomationPanel automation;
     private Button qualityButton;
+    private TextView hookStatus;
     private boolean serviceConnected;
     private final Map<String, Boolean> pending = new HashMap<>();
     private final Map<String, Integer> pendingIntegers = new HashMap<>();
@@ -43,6 +44,7 @@ public final class AppDetailActivity extends Activity {
         }
         setContentView(R.layout.activity_app_detail);
         SystemBarInsets.apply(findViewById(android.R.id.content));
+        hookStatus = (TextView) findViewById(R.id.hook_status_detail);
 
         findViewById(R.id.detail_back).setOnClickListener(view -> finish());
         findViewById(R.id.action_mine_settings).setOnClickListener(view ->
@@ -89,9 +91,19 @@ public final class AppDetailActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        updateHookStatus();
         GlassSettingsBridge.connect(remote -> runOnUiThread(() -> {
             if (!isFinishing() && !isDestroyed()) onRemoteConnected(remote);
         }));
+    }
+
+    private void updateHookStatus() {
+        try {
+            Bundle status = getContentResolver().call(TaskLogProvider.URI, "read_hook_status", null, null);
+            hookStatus.setText(HookStatus.describe(status));
+        } catch (RuntimeException unavailable) {
+            hookStatus.setText("暂时无法读取加载状态；当前功能注册情况未确认。");
+        }
     }
 
     @Override protected void onDestroy() {
@@ -207,7 +219,8 @@ public final class AppDetailActivity extends Activity {
                 + "rewards=" + switchValue(R.id.switch_rewards_value) + "\n"
                 + "vipAds=" + switchValue(R.id.switch_vip_ads_value) + "\n"
                 + "vip4k=" + switchValue(R.id.switch_vip_4k_value) + "\n"
-                + "quality=" + getString(QUALITY_LABELS[qualityIndex]);
+                + "quality=" + getString(QUALITY_LABELS[qualityIndex])
+                + "\n\n" + hookStatus.getText();
         ClipboardManager clipboard =
                 (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard != null) {

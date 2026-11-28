@@ -208,7 +208,21 @@ public interface IFloatWindowContainer {}
 """,
     "com/huya/oak/miniapp/container/internal/MiniAppPopupFragment.java": """
 package com.huya.oak.miniapp.container.internal;
-public class MiniAppPopupFragment {}
+import com.huya.oak.miniapp.MiniAppInfo;
+public class MiniAppPopupFragment {
+ private MiniAppInfo info;
+ public MiniAppPopupFragment(){}
+ public MiniAppPopupFragment(MiniAppInfo info){this.info=info;}
+ public MiniAppInfo getMiniAppInfo(){return info;}
+}
+""",
+    "com/huya/oak/miniapp/MiniAppInfo.java": """
+package com.huya.oak.miniapp;
+public class MiniAppInfo {
+ private final String uuid;
+ public MiniAppInfo(String uuid){this.uuid=uuid;}
+ public String getExtUuid(){return uuid;}
+}
 """,
     "com/huya/kiwi/hyext/delegate/api/HYExtRightTopWindowModeManager.java": """
 package com.huya.kiwi.hyext.delegate.api;
@@ -432,6 +446,7 @@ import com.duowan.kiwi.livead.api.adplugin.api.IHYRoomPopupPlugin.IHYChannelAvai
 import com.duowan.HUYA.ActCommEnt;
 import com.duowan.kiwi.passage.api.view.floatwindow.IFloatWindowContainer;
 import com.huya.oak.miniapp.container.internal.MiniAppPopupFragment;
+import com.huya.oak.miniapp.MiniAppInfo;
 import com.huya.kiwi.hyext.delegate.api.HYExtRightTopWindowModeManager;
 import com.duowan.kiwi.universal.live.activitybar.banner.UniversalLiveBannerView;
 import com.duowan.kiwi.universal.live.activitybar.banner.UniversalTaskBannerView;
@@ -520,7 +535,7 @@ public class DisplayAdsTest {
    prefs.set(entry,Proxy.newProxyInstance(loader,new Class<?>[]{SharedPreferences.class},
     (proxy,method,values)->settings.getOrDefault(values[0],(Boolean)values[1])));
   }
-  if(args[0].equals("live-landscape-reward-shortcuts")){
+  if(args[0].equals("live-landscape-reward-shortcuts")||args[0].equals("live-mall-miniapp")){
    Map<String,Boolean> settings=Map.of("live_cards",Boolean.valueOf(args[1]),
      "live_landscape_sidebar",Boolean.valueOf(args[2]),"live_cart",false);
    Field prefs=HuyaCompatEntry.class.getDeclaredField("prefs");
@@ -605,7 +620,7 @@ public class DisplayAdsTest {
   }
   if(args[0].equals("native-live-ads")){
    boolean filterBanner=args.length==3&&Boolean.parseBoolean(args[1]);
-   boolean filterFloat=args.length==3&&Boolean.parseBoolean(args[2]);
+   boolean filterFloat=args.length==1||Boolean.parseBoolean(args[2]);
    AdLiveBannerView banner=new AdLiveBannerView();
    Object shown=call(banner,"showAd",new Class<?>[]{List.class,Map.class},List.of("ad"),Map.of());
    check(Boolean.valueOf(!filterBanner).equals(shown),"Banner must respect its own switch");
@@ -672,6 +687,26 @@ public class DisplayAdsTest {
       check(manager.attachedCards==before+1,"An open mini app can still be minimized");
      }
     }
+   }
+  }else if(args[0].equals("live-mall-miniapp")){
+   HYExtRightTopWindowModeManager manager=new HYExtRightTopWindowModeManager();
+   Class<?>[] types={IFloatWindowContainer.class,MiniAppPopupFragment.class,
+    ActCommEnt.class,int.class,boolean.class};
+   boolean campaigns=Boolean.parseBoolean(args[1]);
+   boolean sidebar=Boolean.parseBoolean(args[2]);
+   for(boolean landscape:new boolean[]{false,true}){
+    for(String uuid:new String[]{"sbn47atc","reward-miniapp","unknown",null}){
+     int before=manager.attachedCards;
+     MiniAppPopupFragment fragment=new MiniAppPopupFragment(new MiniAppInfo(uuid));
+     call(manager,"createFloatWindowItemView",types,null,fragment,new ActCommEnt(8675311),0,landscape);
+     boolean blocked="sbn47atc".equals(uuid)&&(campaigns||(sidebar&&landscape));
+     check(manager.attachedCards==before+(blocked?0:1),
+      "Mall promotion must respect filters even when its mini app is already loaded: "+uuid);
+    }
+    int before=manager.attachedCards;
+    call(manager,"createFloatWindowItemView",types,null,new MiniAppPopupFragment(),
+     new ActCommEnt(8675311),0,landscape);
+    check(manager.attachedCards==before+1,"Unidentified mini apps must keep their original behavior");
    }
   }else if(args[0].equals("live-campaign-shortcuts")){
    UniversalComponentNavigationView nav=new UniversalComponentNavigationView();
@@ -1114,8 +1149,11 @@ assert.deepEqual(shown, ['sign-in', layer, regularLayer]);
     def test_live_floating_ads_stop_before_native_queue_without_removing_reward_entries(self):
         self.run_case("live-floating-ads")
 
-    def test_native_banner_and_float_filters_are_independent_and_opt_in(self):
-        for switches in ((), ("false", "false"), ("true", "false"),
+    def test_native_float_ads_are_blocked_when_preferences_are_unset(self):
+        self.run_case("native-live-ads")
+
+    def test_native_banner_and_float_filters_respect_independent_explicit_choices(self):
+        for switches in (("false", "false"), ("true", "false"),
                          ("false", "true"), ("true", "true")):
             with self.subTest(switches=switches):
                 self.run_case("native-live-ads", *switches)
@@ -1125,6 +1163,12 @@ assert.deepEqual(shown, ['sign-in', layer, regularLayer]);
 
     def test_promotional_h5_and_miniapp_cards_do_not_attach_floating_windows(self):
         self.run_case("live-promotion-windows")
+
+    def test_loaded_mall_promotion_miniapp_respects_filters_and_keeps_other_miniapps(self):
+        for campaigns in ("true", "false"):
+            for sidebar in ("false", "true"):
+                with self.subTest(campaigns=campaigns, sidebar=sidebar):
+                    self.run_case("live-mall-miniapp", campaigns, sidebar)
 
     def test_live_campaign_shortcuts_keep_non_promotional_buttons(self):
         self.run_case("live-campaign-shortcuts")

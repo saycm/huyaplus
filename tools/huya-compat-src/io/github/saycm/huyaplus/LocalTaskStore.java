@@ -17,7 +17,7 @@ final class LocalTaskStore extends SQLiteOpenHelper {
     LocalTaskStore(Context context) { this(context, null); }
 
     LocalTaskStore(Context context, Runnable onAppend) {
-        super(context, "fuckad_daily_tasks.db", null, 6);
+        super(context, "fuckad_daily_tasks.db", null, 7);
         this.onAppend = onAppend;
     }
 
@@ -28,6 +28,7 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         createTasks(db);
         createGiftPlans(db);
         createTaskScope(db);
+        createLogSync(db);
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
@@ -39,6 +40,12 @@ final class LocalTaskStore extends SQLiteOpenHelper {
             createTaskScope(db);
             db.delete("tasks", null, null);
         }
+        if (oldVersion < 7) createLogSync(db);
+    }
+
+    private void createLogSync(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS log_sync (slot INTEGER PRIMARY KEY, last_id INTEGER NOT NULL)");
+        db.execSQL("INSERT OR IGNORE INTO log_sync (slot, last_id) VALUES (1, 0)");
     }
 
     private void createTasks(SQLiteDatabase db) {
@@ -155,14 +162,15 @@ final class LocalTaskStore extends SQLiteOpenHelper {
         row.put("task", trim(task)); row.put("target", trim(target));
         row.put("state", trim(state)); row.put("detail", trim(detail));
         db.insertOrThrow("events", null, row);
-        db.execSQL("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 500)");
+        pruneEvents(db);
         if (onAppend != null) onAppend.run();
     }
 
     synchronized ArrayList<Bundle> events() {
         ArrayList<Bundle> entries = new ArrayList<>();
         try (Cursor rows = getReadableDatabase().rawQuery(
-                "SELECT event_key,time,task,target,state,detail FROM events ORDER BY id", null)) {
+                "SELECT event_key,time,task,target,state,detail,id FROM events "
+                        + "WHERE id > (SELECT last_id FROM log_sync WHERE slot = 1) ORDER BY id", null)) {
             while (rows.moveToNext()) {
                 Bundle entry = new Bundle();
                 entry.putString("key", rows.getString(0));
@@ -171,10 +179,22 @@ final class LocalTaskStore extends SQLiteOpenHelper {
                 entry.putString("target", rows.getString(3));
                 entry.putString("state", rows.getString(4));
                 entry.putString("detail", rows.getString(5));
+                entry.putLong("id", rows.getLong(6));
                 entries.add(entry);
             }
         }
         return entries;
+    }
+
+    synchronized void acknowledgeEvents(long lastId) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.execSQL("UPDATE log_sync SET last_id = MAX(last_id, ?) WHERE slot = 1", new Object[]{lastId});
+        pruneEvents(db);
+    }
+
+    private void pruneEvents(SQLiteDatabase db) {
+        db.execSQL("DELETE FROM events WHERE id <= (SELECT last_id FROM log_sync WHERE slot = 1) "
+                + "AND id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 500)");
     }
 
     synchronized void replaceTasks(String scope, List<NativeTaskCatalog.Task> tasks) {

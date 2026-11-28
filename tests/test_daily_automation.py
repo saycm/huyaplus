@@ -76,12 +76,19 @@ public class ContentResolver {
  public static final Set<String> claims=new HashSet<>();
  public static final List<Bundle> events=new ArrayList<>();
  public static volatile int imports, completed;
+ public static volatile boolean nullImport;
+ public static int failImportAt;
  public Bundle call(String authority,String method,String arg,Bundle row){return null;}
  public Bundle call(Uri uri,String method,String arg,Bundle row){
   if(delaySync){entered.countDown();try{release.await();}catch(InterruptedException e){throw new RuntimeException(e);}}
   if(blocked)throw new IllegalStateException("Module process must remain stopped");
   Bundle result=new Bundle();
-  if("import".equals(method)&&row!=null){events.addAll(row.getParcelableArrayList("events"));imports++;}
+  if("import".equals(method)&&row!=null){
+   if(nullImport)return null;
+   imports++;
+   if(imports==failImportAt)throw new IllegalStateException("batch transport failed");
+   events.addAll(row.getParcelableArrayList("events"));
+  }
   if("sync_complete".equals(method))completed++;
   return result;
  }
@@ -121,6 +128,7 @@ final class LocalTaskStore {
  static final List<Bundle> localEvents=new ArrayList<>();
  static final List<String> taskScopes=new ArrayList<>();
  static final Map<String,List<AutomationRules.GrainPart>> giftPlans=new HashMap<>();
+ static long lastId,acknowledged;
  final Runnable onAppend;
  LocalTaskStore(Context context){this(context,null);}
  LocalTaskStore(Context context,Runnable onAppend){this.onAppend=onAppend;}
@@ -139,12 +147,17 @@ final class LocalTaskStore {
  }
  void append(String task,String target,String state,String detail){
   Bundle row=new Bundle();row.putString("task",task);row.putString("target",target);
-  row.putString("state",state);row.putString("detail",detail);localEvents.add(row);
+  row.putString("state",state);row.putString("detail",detail);row.putLong("id",++lastId);localEvents.add(row);
   if(onAppend!=null)onAppend.run();
  }
  void replaceTasks(String scope,List<NativeTaskCatalog.Task> tasks){if(onAppend!=null)onAppend.run();}
  void replaceDiceTasks(String scope,List<DiceTaskCatalog.Task> tasks){if(onAppend!=null)onAppend.run();}
- ArrayList<Bundle> events(){return new ArrayList<>(localEvents);}
+ ArrayList<Bundle> events(){
+  ArrayList<Bundle> pending=new ArrayList<>();
+  for(Bundle row:localEvents)if(row.getLong("id")>acknowledged)pending.add(row);
+  return pending;
+ }
+ void acknowledgeEvents(long id){acknowledged=Math.max(acknowledged,id);}
  ArrayList<Bundle> tasks(String scope){return new ArrayList<>();}
 }
 ''',
@@ -313,10 +326,11 @@ public class DailyEngineTest {
  public static void main(String[] args) throws Throwable {
   boolean enabled=!"disabled".equals(args[0])&&!"sync-storm".equals(args[0])
     &&!"auto-sync".equals(args[0])&&!"sync-during".equals(args[0])
-    &&!"sync-empty".equals(args[0])&&!"sync-resume".equals(args[0])&&!args[0].startsWith("dice-");
+    &&!args[0].startsWith("sync-")&&!args[0].startsWith("dice-");
   final boolean[] signOn={enabled};
   if("sync-storm".equals(args[0])||"sync-during".equals(args[0]))ContentResolver.delaySync=true;
   if("module-stopped".equals(args[0])||"sync-resume".equals(args[0]))ContentResolver.blocked=true;
+  if("sync-null".equals(args[0]))ContentResolver.nullImport=true;
   if("logout".equals(args[0]))xxe.uid=0;
   if("timeout".equals(args[0]))TestServer.drop=true;
   if("malformed-badge".equals(args[0]))TestServer.malformedBadge=true;
@@ -360,6 +374,27 @@ public class DailyEngineTest {
    };
   }
   DailyAutomation engine=new DailyAutomation(module,prefs,loader);
+  if("sync-batch-failure".equals(args[0])){
+   LocalTaskStore journal=new LocalTaskStore(context);
+   for(int i=0;i<120;i++)journal.append("bulk",String.valueOf(i),"成功","");
+   for(String name:new String[]{"context","store"}){
+    Field field=DailyAutomation.class.getDeclaredField(name);field.setAccessible(true);
+    field.set(engine,name.equals("context")?context:journal);
+   }
+   Field dirty=DailyAutomation.class.getDeclaredField("logsDirty");dirty.setAccessible(true);
+   Method sync=DailyAutomation.class.getDeclaredMethod("syncLogs");sync.setAccessible(true);
+   ContentResolver.failImportAt=2;
+   ((java.util.concurrent.atomic.AtomicBoolean)dirty.get(engine)).set(true);sync.invoke(engine);
+   if(LocalTaskStore.acknowledged!=50||ContentResolver.completed!=0)
+    throw new AssertionError("a failed batch advanced the cursor past confirmed events");
+   ContentResolver.failImportAt=0;
+   ((java.util.concurrent.atomic.AtomicBoolean)dirty.get(engine)).set(true);sync.invoke(engine);
+   java.util.Set<Long> ids=new java.util.HashSet<>();
+   for(Bundle row:ContentResolver.events)ids.add(row.getLong("id"));
+   if(ContentResolver.events.size()!=121||ids.size()!=121||ContentResolver.completed!=1)
+    throw new AssertionError("batch retry lost events or retransmitted confirmed batches");
+   return;
+  }
   engine.onOpen(context);
   if("disable-running".equals(args[0])){
    signOn[0]=false;
@@ -369,6 +404,26 @@ public class DailyEngineTest {
   }
   Handler.advance(90000);
   int lists=TestServer.lists,signs=TestServer.signs;
+  if("sync-incremental".equals(args[0])||"sync-null".equals(args[0])){
+   for(Thread thread:Thread.getAllStackTraces().keySet())
+    if("FuckAD-log-sync".equals(thread.getName()))thread.join(3000);
+   if("sync-null".equals(args[0])){
+    if(ContentResolver.completed!=0||LocalTaskStore.acknowledged!=0)
+     throw new AssertionError("null provider response was acknowledged as success");
+    ContentResolver.nullImport=false;
+   }
+   int baseline=ContentResolver.completed;
+   int imports=ContentResolver.imports;
+   Context.receiver.onReceive(context,new Intent(DailyAutomation.SYNC_LOGS));
+   long end=System.currentTimeMillis()+3000;
+   while(ContentResolver.completed==baseline&&System.currentTimeMillis()<end)Thread.sleep(10);
+   if(ContentResolver.completed==baseline)throw new AssertionError("sync did not complete");
+   if("sync-incremental".equals(args[0])&&ContentResolver.imports!=imports)
+    throw new AssertionError("unchanged history was retransmitted");
+   if("sync-null".equals(args[0])&&ContentResolver.events.isEmpty())
+    throw new AssertionError("unacknowledged logs were lost");
+   return;
+  }
   if("malformed-badge".equals(args[0])){
    if(signs!=2||!engine.isIdle())throw new AssertionError("a malformed badge blocked valid badges or left the queue busy");
    return;
@@ -516,7 +571,8 @@ class DailyAutomationTest(unittest.TestCase):
                          "malformed-badge", "stale-sign-status", "malformed-sign-receipt",
                          "reward", "reward-timeout", "reward-wrong-account", "sign-timeout", "sign-rejected",
                          "sync-during", "sync-storm", "sync-resume", "native-failure",
-                         "dice-off", "dice-busy", "dice-unavailable", "sync-empty", "disable-running"):
+                         "dice-off", "dice-busy", "dice-unavailable", "sync-empty", "disable-running",
+                         "sync-incremental", "sync-null", "sync-batch-failure"):
                 with self.subTest(case=case):
                     result = subprocess.run(
                         [str(JDK / "bin" / ("java" + EXE)), "-cp",

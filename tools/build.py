@@ -113,7 +113,7 @@ def main() -> None:
         for name in ("java_init.list", "module.prop", "scope.list"):
             apk.write(metadata / name, "META-INF/xposed/" + name)
 
-    output = ROOT / "build/HuyaPlus_1.27-unsigned.apk"
+    output = ROOT / "build/HuyaPlus_1.28-unsigned.apk"
     run(str(BUILD_TOOLS / ("zipalign" + EXE)), "-f", "-p", "4",
         str(linked), str(output))
     print(output)

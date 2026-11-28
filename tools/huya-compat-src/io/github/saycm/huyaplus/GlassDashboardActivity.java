@@ -2,6 +2,7 @@ package io.github.saycm.huyaplus;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -22,6 +23,15 @@ public final class GlassDashboardActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_glass_dashboard);
         SystemBarInsets.apply(findViewById(android.R.id.content));
+
+        TextView moduleVersion = findViewById(R.id.dashboard_version);
+        try {
+            String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            if (version == null || version.isEmpty()) moduleVersion.setVisibility(View.GONE);
+            else moduleVersion.setText(getString(R.string.dashboard_version, version));
+        } catch (PackageManager.NameNotFoundException failure) {
+            moduleVersion.setVisibility(View.GONE);
+        }
 
         Button details = (Button) findViewById(R.id.action_app);
         details.setText(R.string.action_detail);

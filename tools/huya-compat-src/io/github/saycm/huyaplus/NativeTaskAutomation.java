@@ -7,22 +7,26 @@ import android.util.Log;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.function.LongSupplier;
 
 import io.github.libxposed.api.XposedModule;
 
 final class NativeTaskAutomation {
     private static final long DICE_CHECK_INTERVAL = 15 * 60 * 1000L;
+    private static final long COIN_CHECK_INTERVAL = 60 * 60 * 1000L;
     private final XposedModule module;
     private final SharedPreferences prefs;
     private final LocalTaskStore store;
     private final HuyaTaskClient client;
     private final DailyAutomation gifts;
+    private final LongSupplier clock;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Set<String> seen = new HashSet<>();
     private final Set<String> diceListsRead = new HashSet<>();
@@ -31,10 +35,19 @@ final class NativeTaskAutomation {
     private Object context;
     private boolean running;
     private String diceMonitor;
+    private String coinMonitor, coinTaskScope, coinAttemptSlot;
+    private Runnable coinCheck;
+    private List<NativeTaskCatalog.Task> coinTasks = Collections.emptyList();
 
     NativeTaskAutomation(XposedModule module, SharedPreferences prefs, ClassLoader loader,
                          LocalTaskStore store, DailyAutomation gifts) {
+        this(module, prefs, loader, store, gifts, System::currentTimeMillis);
+    }
+
+    NativeTaskAutomation(XposedModule module, SharedPreferences prefs, ClassLoader loader,
+                         LocalTaskStore store, DailyAutomation gifts, LongSupplier clock) {
         this.module = module; this.prefs = prefs; this.store = store;
+        this.clock = clock;
         this.gifts = gifts; client = new HuyaTaskClient(loader);
     }
 
@@ -66,6 +79,7 @@ final class NativeTaskAutomation {
         Runnable complete = () -> finishRun(() -> {
             finished.run();
             monitorDice(account, date, interval);
+            monitorCoins(account, date, interval);
         });
         String dayKey = account + "/" + date;
         boolean first = seen.add(dayKey);
@@ -74,7 +88,8 @@ final class NativeTaskAutomation {
                 running = true;
                 handler.postDelayed(() -> runDiceMissions(account, date, interval, true,
                         () -> runCoins(account, date, interval, complete)), interval);
-            } else if (!coinListsRead.contains(dayKey) && prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) {
+            } else if (!coinListsRead.contains(coinListKey(account, date))
+                    && prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) {
                 running = true;
                 runCoins(account, date, interval, complete);
             } else complete.run();
@@ -119,8 +134,10 @@ final class NativeTaskAutomation {
     }
 
     private NativeTaskRunner coinRunner(long account, String date, long interval, Runnable finished) {
+        String slot = coinListKey(account, date);
         return new NativeTaskRunner(new NativeTaskRunner.Host() {
             @Override public boolean enabled() { return prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false); }
+            @Override public long now() { return clock.getAsLong(); }
             @Override public long uid() {
                 try { return date.equals(currentDate()) ? client.loggedInUid() : 0; }
                 catch (ReflectiveOperationException | RuntimeException failure) { return 0; }
@@ -137,7 +154,9 @@ final class NativeTaskAutomation {
                 }
             }
             @Override public void publish(List<NativeTaskCatalog.Task> tasks) {
-                coinListsRead.add(account + "/" + date);
+                coinListsRead.add(slot);
+                coinTaskScope = account + "/" + date;
+                coinTasks = tasks;
                 try { store.replaceTasks(account + "/" + date, tasks); }
                 catch (RuntimeException failure) {
                     log("任务列表", "失败", "任务清单保存失败，仍按当前开关执行");
@@ -161,10 +180,12 @@ final class NativeTaskAutomation {
 
     private void runCoins(long account, String date, long interval, Runnable finished) {
         try {
-            if (!coinListsRead.contains(account + "/" + date)
+            if (!coinListsRead.contains(coinListKey(account, date))
                     && prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) {
-                NativeTaskRunner runner = coinRunner(account, date, interval, finished);
-                handler.postDelayed(() -> runner.start(account, date), interval);
+                handler.postDelayed(() -> {
+                    coinAttemptSlot = coinListKey(account, date);
+                    coinRunner(account, date, interval, finished).start(account, date);
+                }, interval);
                 return;
             }
         } catch (RuntimeException failure) {
@@ -390,12 +411,69 @@ final class NativeTaskAutomation {
                 && prefs.getBoolean(GlassSettings.KEY_AUTO_GIFT, false);
     }
 
+    private String coinListKey(long account, String date) {
+        return account + "/" + date + "/" + clock.getAsLong() / COIN_CHECK_INTERVAL;
+    }
+
+    private boolean coinMonitoringNeeded(String dayKey) {
+        if (!prefs.getBoolean(GlassSettings.KEY_NATIVE_TASKS, false)) return false;
+        if (!dayKey.equals(coinTaskScope)) return true;
+        for (NativeTaskCatalog.Task task : coinTasks) {
+            if (prefs.getBoolean(task.settingsKey(), true)) return true;
+        }
+        return false;
+    }
+
+    private long nextCoinCheckDelay(long account, String date, long interval) {
+        if (!coinListKey(account, date).equals(coinAttemptSlot)) return interval;
+        return COIN_CHECK_INTERVAL - Math.floorMod(clock.getAsLong(), COIN_CHECK_INTERVAL);
+    }
+
+    private void monitorCoins(long account, String date, long interval) {
+        String key = account + "/" + date;
+        try {
+            if (!date.equals(currentDate()) || client.loggedInUid() != account
+                    || !coinMonitoringNeeded(key) || key.equals(coinMonitor)) return;
+            if (coinCheck != null) handler.removeCallbacks(coinCheck);
+            coinMonitor = key;
+            coinCheck = new Runnable() {
+                @Override public void run() {
+                    if (this != coinCheck) return;
+                    try {
+                        if (!date.equals(currentDate()) || client.loggedInUid() != account
+                                || !coinMonitoringNeeded(key)) {
+                            coinMonitor = null; coinCheck = null;
+                            return;
+                        }
+                        if (running || !gifts.isIdle()) {
+                            handler.postDelayed(this, 60000L);
+                            return;
+                        }
+                        running = true;
+                        runCoins(account, date, interval, () -> finishRun(() -> {
+                            if (this == coinCheck) {
+                                handler.postDelayed(this, nextCoinCheckDelay(account, date, interval));
+                            }
+                        }));
+                    } catch (ReflectiveOperationException | RuntimeException failure) {
+                        running = false;
+                        coinMonitor = null; coinCheck = null;
+                        log("每日赚金币", "", "未确认", "时段复核失败，本轮未继续查询");
+                    }
+                }
+            };
+            handler.postDelayed(coinCheck, nextCoinCheckDelay(account, date, interval));
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            log("每日赚金币", "", "未确认", "时段复核配置不可用，未启动定时查询");
+        }
+    }
+
     boolean isIdle() { return !running; }
 
-    private static String currentDate() {
+    private String currentDate() {
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT);
         format.setTimeZone(TimeZone.getTimeZone("Asia/Shanghai"));
-        return format.format(new Date());
+        return format.format(new Date(clock.getAsLong()));
     }
 
     private void performTask(long account, NativeTaskCatalog.Task task,

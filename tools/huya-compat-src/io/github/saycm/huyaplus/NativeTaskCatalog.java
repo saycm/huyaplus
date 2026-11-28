@@ -41,6 +41,9 @@ final class NativeTaskCatalog {
         }
         String key() { return kind + "/" + id; }
         String settingsKey() { return switchKey(this); }
+        boolean isHourlyReward() {
+            return HOURLY_GOLD.equals(title) && goldType == 1 && action.isEmpty();
+        }
         boolean isMealReward() {
             return MEAL_GOLD.equals(title) && goldType == 34
                     && (MEAL_PAGE.equals(action) || action.startsWith(MEAL_PAGE + "?"));

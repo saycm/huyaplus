@@ -56,8 +56,8 @@ class HuyaApi102MetadataTest(unittest.TestCase):
             (MODULE_DIR / "res/mipmap-xxxhdpi/ic_launcher.png").is_file(),
             "launcher icon is missing",
         )
-        self.assertIn('android:versionCode="28"', manifest)
-        self.assertIn('android:versionName="1.27"', manifest)
+        self.assertIn('android:versionCode="33"', manifest)
+        self.assertIn('android:versionName="1.28"', manifest)
         self.assertIn('android:name=".GlassDashboardActivity"', manifest)
         self.assertIn('android:name=".AppDetailActivity"', manifest)
         self.assertIn('android:theme="@style/GlassDashboard"', manifest)
@@ -88,6 +88,7 @@ class HuyaApi102MetadataTest(unittest.TestCase):
         layout_text = layout.read_text(encoding="utf-8")
         for name in (
             "status_card",
+            "dashboard_version",
             "hero_avatar",
             "app_card",
             "action_app",
@@ -110,7 +111,8 @@ class HuyaApi102MetadataTest(unittest.TestCase):
         ):
             self.assertNotIn(f'@+id/{name}', layout_text)
         self.assertIn("Uri.parse", activity.read_text(encoding="utf-8"))
-        self.assertIn('name="dashboard_version">v1.27</string>',
+        self.assertIn("getPackageInfo(getPackageName(), 0).versionName", activity.read_text(encoding="utf-8"))
+        self.assertIn('name="dashboard_version">v%1$s</string>',
                       (MODULE_DIR / "res/values/strings.xml").read_text(encoding="utf-8"))
         detail_text = detail_layout.read_text(encoding="utf-8")
         self.assertTrue(hero_pika.is_file(), "hero pikachu drawable is missing")
@@ -245,16 +247,24 @@ class HuyaApi102MetadataTest(unittest.TestCase):
         self.assertIn("lastSync() > syncBaseline", activity)
         self.assertIn("SYNC_POLL_MS", activity)
         self.assertIn("SYNC_TIMEOUT_MS", activity)
+        self.assertIn('"sync_status"', activity)
+        provider = (
+            ROOT
+            / "tools/huya-compat-src/io/github/saycm/huyaplus/TaskLogProvider.java"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"sync_status".equals(method)', provider)
         self.assertNotIn("postDelayed(afterSync, 900L)", activity)
 
-    def test_log_page_uses_compact_rows_instead_of_individual_glass_cards(self):
+    def test_log_page_uses_selectable_text_with_type_and_date_selectors(self):
         activity = (
             ROOT
             / "tools/huya-compat-src/io/github/saycm/huyaplus/TaskLogActivity.java"
         ).read_text(encoding="utf-8")
-        self.assertIn("private LinearLayout logRow", activity)
-        self.assertIn("private View divider", activity)
-        self.assertNotIn("LinearLayout item = card(logs);", activity)
+        self.assertIn('choose("日志类型"', activity)
+        self.assertIn('choose("日志日期"', activity)
+        self.assertIn('"HH:mm:ss.SSS"', activity)
+        self.assertIn("setTextIsSelectable(true)", activity)
+        self.assertNotIn("private LinearLayout logRow", activity)
 
     def test_glass_dashboard_build_resolves_generated_resources(self):
         build_script = (ROOT / "tools/build.py").read_text(encoding="utf-8")

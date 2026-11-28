@@ -25,13 +25,14 @@ public final class TaskLogProvider extends ContentProvider {
 
     @Override
     public boolean onCreate() {
-        helper = new SQLiteOpenHelper(getContext(), "daily_tasks.db", null, 6) {
+        helper = new SQLiteOpenHelper(getContext(), "daily_tasks.db", null, 7) {
             @Override public void onCreate(SQLiteDatabase db) {
                 db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                         + "time INTEGER NOT NULL, task TEXT NOT NULL, target TEXT NOT NULL, "
                         + "state TEXT NOT NULL, detail TEXT NOT NULL, origin TEXT)");
                 db.execSQL("CREATE UNIQUE INDEX events_origin ON events(origin)");
                 createTasks(db);
+                createHookStatus(db);
             }
             @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
                 if (oldVersion < 2) {
@@ -40,11 +41,18 @@ public final class TaskLogProvider extends ContentProvider {
                 }
                 if (oldVersion < 3) createTasks(db);
                 if (oldVersion < 6) db.delete("tasks", null, null);
+                if (oldVersion < 7) createHookStatus(db);
             }
             private void createTasks(SQLiteDatabase db) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS tasks (task_key TEXT PRIMARY KEY, "
                         + "title TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL, "
                         + "updated INTEGER NOT NULL, sort_order INTEGER NOT NULL)");
+            }
+            private void createHookStatus(SQLiteDatabase db) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS hook_session (slot INTEGER PRIMARY KEY, "
+                        + "process TEXT NOT NULL, session TEXT NOT NULL, started INTEGER NOT NULL, updated INTEGER NOT NULL)");
+                db.execSQL("CREATE TABLE IF NOT EXISTS hook_features (feature TEXT PRIMARY KEY, "
+                        + "state TEXT NOT NULL, reason TEXT NOT NULL)");
             }
         };
         return true;
@@ -64,7 +72,13 @@ public final class TaskLogProvider extends ContentProvider {
         }
         SQLiteDatabase db = helper.getWritableDatabase();
         Bundle result = new Bundle();
-        if ("import".equals(method)) {
+        if ("hook_status".equals(method)) {
+            if (!huya) throw new SecurityException("Only Huya can report hook registration status");
+            saveHookStatus(db, extras);
+        } else if ("read_hook_status".equals(method)) {
+            if (!owner) throw new SecurityException("Only module can read hook registration status");
+            readHookStatus(db, result);
+        } else if ("import".equals(method)) {
             ArrayList<Bundle> incoming = extras == null ? null : extras.getParcelableArrayList("events");
             if (incoming == null || incoming.size() > 50) throw new IllegalArgumentException("Invalid batch");
             long cutoff = getContext().getSharedPreferences("task_log_display", 0).getLong("cutoff", 0);
@@ -121,6 +135,10 @@ public final class TaskLogProvider extends ContentProvider {
             getContext().getSharedPreferences("task_log_display", 0).edit()
                     .putLong("last_tasks_sync", System.currentTimeMillis()).apply();
             getContext().getContentResolver().notifyChange(TASKS_URI, null);
+        } else if ("sync_status".equals(method)) {
+            if (!owner) throw new SecurityException("Only module can read log synchronization status");
+            result.putLong("last_sync", getContext().getSharedPreferences("task_log_display", 0)
+                    .getLong("last_sync", 0));
         } else if ("read".equals(method)) {
             if (!owner) throw new SecurityException("Only module can read logs");
             ArrayList<Bundle> entries = new ArrayList<>();
@@ -169,6 +187,62 @@ public final class TaskLogProvider extends ContentProvider {
             throw new IllegalArgumentException("Unknown action");
         }
         return result;
+    }
+
+    private void saveHookStatus(SQLiteDatabase db, Bundle status) {
+        ArrayList<Bundle> features = status == null ? null : status.getParcelableArrayList("features");
+        if (features == null || features.size() > 100
+                || !"com.duowan.kiwi".equals(status.getString("process", ""))
+                || status.getString("session", "").isEmpty() || status.getString("session", "").length() > 64
+                || status.getLong("started") <= 0 || status.getLong("updated") < status.getLong("started")) {
+            throw new IllegalArgumentException("Invalid main-process hook status");
+        }
+        db.beginTransaction();
+        try {
+            try (Cursor current = db.rawQuery("SELECT started FROM hook_session WHERE slot = 1", null)) {
+                if (current.moveToFirst() && current.getLong(0) > status.getLong("started")) return;
+            }
+            ContentValues session = new ContentValues();
+            session.put("slot", 1);
+            session.put("process", "com.duowan.kiwi");
+            session.put("session", status.getString("session"));
+            session.put("started", status.getLong("started"));
+            session.put("updated", status.getLong("updated"));
+            db.replaceOrThrow("hook_session", null, session);
+            db.delete("hook_features", null, null);
+            for (Bundle entry : features) {
+                String feature = entry.getString("feature", "");
+                String state = entry.getString("state", "");
+                if (feature.isEmpty() || feature.length() > 100 || !HookStatus.validState(state)) continue;
+                ContentValues row = new ContentValues();
+                row.put("feature", feature);
+                row.put("state", state);
+                row.put("reason", bounded(entry.getString("reason", "")));
+                db.replaceOrThrow("hook_features", null, row);
+            }
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
+    }
+
+    private void readHookStatus(SQLiteDatabase db, Bundle result) {
+        try (Cursor session = db.rawQuery("SELECT process, session, started, updated FROM hook_session WHERE slot = 1", null)) {
+            if (!session.moveToFirst()) return;
+            result.putString("process", session.getString(0));
+            result.putString("session", session.getString(1));
+            result.putLong("started", session.getLong(2));
+            result.putLong("updated", session.getLong(3));
+        }
+        ArrayList<Bundle> features = new ArrayList<>();
+        try (Cursor rows = db.rawQuery("SELECT feature, state, reason FROM hook_features ORDER BY feature", null)) {
+            while (rows.moveToNext()) {
+                Bundle entry = new Bundle();
+                entry.putString("feature", rows.getString(0));
+                entry.putString("state", rows.getString(1));
+                entry.putString("reason", rows.getString(2));
+                features.add(entry);
+            }
+        }
+        result.putParcelableArrayList("features", features);
     }
 
     private static String bounded(String value) {

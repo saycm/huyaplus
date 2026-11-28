@@ -118,7 +118,7 @@ class TaskGroupTests(unittest.TestCase):
     def test_stale_catalog_rows_are_discarded_without_touching_claims(self):
         source = ROOT / 'tools/huya-compat-src/io/github/saycm/huyaplus'
         store = (source / 'LocalTaskStore.java').read_text(encoding='utf-8')
-        self.assertIn('"fuckad_daily_tasks.db", null, 6', store)
+        self.assertIn('"fuckad_daily_tasks.db", null, 7', store)
         self.assertIn('if (oldVersion < 3) db.delete("tasks", null, null);', store)
         self.assertNotIn('if (oldVersion < 3) db.delete("runs"', store)
         self.assertIn('if (oldVersion < 5) createGiftPlans(db);', store)
@@ -126,7 +126,7 @@ class TaskGroupTests(unittest.TestCase):
                       '            db.delete("tasks", null, null);', store)
         self.assertIn('WHERE slot = 1 AND scope = ?', store)
         provider = (source / 'TaskLogProvider.java').read_text(encoding='utf-8')
-        self.assertIn('"daily_tasks.db", null, 6', provider)
+        self.assertIn('"daily_tasks.db", null, 7', provider)
         self.assertIn('if (oldVersion < 6) db.delete("tasks", null, null);', provider)
         self.assertIn('WHERE updated >= ? AND updated < ?', provider)
         self.assertIn('ZoneId.of("Asia/Shanghai")', provider)

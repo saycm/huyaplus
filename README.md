@@ -44,7 +44,7 @@
 
 | 项目 | 版本或范围 |
 | --- | --- |
-| 模块版本 | 1.27 |
+| 模块版本 | 1.28 |
 | Android | Android 10 及以上（API 29+） |
 | 框架 | 支持 libxposed API 102 的 LSPosed |
 | Root | 在虎牙 plus 首页授权 |

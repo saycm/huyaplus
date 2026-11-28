@@ -333,16 +333,18 @@ final class DailyAutomation {
                 ArrayList<Bundle> tasks = store.tasks(scope);
                 Bundle taskBatch = new Bundle();
                 taskBatch.putParcelableArrayList("tasks", scope.equals(taskSnapshotScope) ? tasks : new ArrayList<>());
-                context.getContentResolver().call(TaskLogProvider.URI, "import_tasks", null, taskBatch);
+                requireSyncReply(context.getContentResolver().call(
+                        TaskLogProvider.URI, "import_tasks", null, taskBatch));
                 ArrayList<Bundle> events = store.events();
                 for (int start = 0; start < events.size(); start += 50) {
                     Bundle batch = new Bundle();
                     batch.putParcelableArrayList("events", new ArrayList<>(
                             events.subList(start, Math.min(start + 50, events.size()))));
-                    context.getContentResolver().call(TaskLogProvider.URI, "import", null, batch);
+                    requireSyncReply(context.getContentResolver().call(TaskLogProvider.URI, "import", null, batch));
+                    store.acknowledgeEvents(events.get(Math.min(start + 50, events.size()) - 1).getLong("id"));
                 }
             }
-            context.getContentResolver().call(TaskLogProvider.URI, "sync_complete", null, null);
+            requireSyncReply(context.getContentResolver().call(TaskLogProvider.URI, "sync_complete", null, null));
             syncFailureLogged = false;
         } catch (RuntimeException failure) {
             failed = true;
@@ -361,6 +363,10 @@ final class DailyAutomation {
                 new Thread(this::syncLogs, "FuckAD-log-sync").start();
             }
         }
+    }
+
+    private static void requireSyncReply(Bundle reply) {
+        if (reply == null) throw new IllegalStateException("Log provider did not acknowledge synchronization");
     }
 
     private void installCallbacks() throws ReflectiveOperationException {

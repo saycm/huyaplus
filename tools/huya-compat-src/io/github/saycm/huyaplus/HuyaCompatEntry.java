@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -188,6 +189,13 @@ public final class HuyaCompatEntry extends XposedModule {
     private boolean activationChecked;
     private SharedPreferences prefs;
     private DailyAutomation dailyAutomation;
+    private final ThreadLocal<HookRegistration> hookRegistration = new ThreadLocal<>();
+
+    private static final class HookRegistration {
+        int registered;
+        int failed;
+        String reason = "";
+    }
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
@@ -234,24 +242,27 @@ public final class HuyaCompatEntry extends XposedModule {
         try {
             Class<?> type = classLoader.loadClass("android.app.Activity");
             Method onCreate = type.getDeclaredMethod("onCreate", android.os.Bundle.class);
-            hook(onCreate).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(onCreate).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object activity = chain.getThisObject();
                 if (!activationChecked && activity instanceof Activity) {
                     activationChecked = true;
+                    HookStatus.start((Activity) activity, android.app.Application.getProcessName());
                     String version = HuyaVersion.installed((Activity) activity);
                     if (!HuyaVersion.supports(version)) {
+                        HookStatus.record("activation", HookStatus.FAILED, "虎牙版本未匹配：" + version);
                         logInfo("unsupported Huya version; requires " + HuyaVersion.SUPPORTED);
                     } else if (isRootAuthorized()) {
                         logInfo("module Root verified");
                         initializeHooks(activity.getClass().getClassLoader());
                     } else {
+                        HookStatus.record("activation", HookStatus.FAILED, "模块 Root 尚未授权");
                         logInfo("module Root unavailable; features disabled");
                     }
                 }
                 return chain.proceed();
             });
             Method onResume = type.getDeclaredMethod("onResume");
-            hook(onResume).intercept(chain -> {
+            trackedHook(onResume).intercept(chain -> {
                 Object result = chain.proceed();
                 if (hooksInitialized && TARGET_PACKAGE.equals(android.app.Application.getProcessName())
                         && chain.getThisObject() instanceof android.content.Context) {
@@ -259,6 +270,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     if (dailyAutomation == null) {
                         dailyAutomation = new DailyAutomation(this, prefs,
                                 chain.getThisObject().getClass().getClassLoader());
+                        HookStatus.record("daily_automation", HookStatus.REGISTERED, "每日任务调度已创建；按任务开关执行");
                     }
                     dailyAutomation.onOpen(context);
                 }
@@ -287,11 +299,11 @@ public final class HuyaCompatEntry extends XposedModule {
         }
         hooksInitialized = true;
         logInfo("initializing with activity loader " + classLoader);
-        hookDefaultQuality(classLoader);
-        hookMinePage(classLoader);
-        hookNavigationVisibility(classLoader);
-        hookMallAiFloat(classLoader);
-        hookLiveMenu(classLoader);
+        registerFeature("quality", true, () -> hookDefaultQuality(classLoader));
+        registerFeature("mine", true, () -> hookMinePage(classLoader));
+        registerFeature("navigation", true, () -> hookNavigationVisibility(classLoader));
+        registerFeature("mall_ai_float", true, () -> hookMallAiFloat(classLoader));
+        registerFeature("live_menu", true, () -> hookLiveMenu(classLoader));
         boolean ads = isEnabled(GlassSettings.KEY_ADS);
         boolean liveCards = isEnabled(GlassSettings.KEY_LIVE_CARDS);
         boolean liveCart = isEnabled(GlassSettings.KEY_LIVE_CART);
@@ -302,54 +314,74 @@ public final class HuyaCompatEntry extends XposedModule {
         boolean rewards = isEnabled(GlassSettings.KEY_REWARDS);
         boolean vipAds = isEnabled(GlassSettings.KEY_VIP_ADS);
         boolean vip4k = isEnabled(GlassSettings.KEY_VIP_4K);
-        if (ads || rewards) {
-            hookMiniappAds(classLoader, ads, rewards);
-        }
-        if (rewards) {
+        registerFeature("miniapp_ads", ads || rewards, () -> hookMiniappAds(classLoader, ads, rewards));
+        registerFeature(GlassSettings.KEY_REWARDS, rewards, () -> {
             hookAmsReward(classLoader);
-        }
+            hookTaskCenterRewards(classLoader);
+        });
         hookAwardRequests(classLoader);
         hookAdRequestDiagnostics(classLoader);
-        if (ads) {
+        registerFeature(GlassSettings.KEY_ADS, ads, () -> {
             hookStartupGuide(classLoader);
             hookDisplayAds(classLoader);
             hookImmerseFeedAds(classLoader);
             hookOfflineRoomAd(classLoader);
             hookListAds(classLoader);
             hookSplash(classLoader);
-        }
-        if (isEnabled(GlassSettings.KEY_RECOMMEND_VIDEO)) {
-            hookRecommendVideos(classLoader);
-        }
-        hookTaskCenterPromotions(classLoader);
-        if (liveCards || liveCart || liveLandscapeSidebar) {
-            hookLiveRoomCards(classLoader, liveCards, liveCart, liveLandscapeSidebar);
-        }
-        if (liveLandscapeMark) {
-            hookLandscapeHighlightMark(classLoader);
-        }
-        if (liveLandscapeSidebar) {
+        });
+        registerFeature(GlassSettings.KEY_RECOMMEND_VIDEO, isEnabled(GlassSettings.KEY_RECOMMEND_VIDEO),
+                () -> hookRecommendVideos(classLoader));
+        registerFeature("task_center_promotions", true, () -> hookTaskCenterPromotions(classLoader));
+        registerFeature("live_room_cards", liveCards || liveCart || liveLandscapeSidebar,
+                () -> hookLiveRoomCards(classLoader, liveCards, liveCart, liveLandscapeSidebar));
+        registerFeature(GlassSettings.KEY_LIVE_LANDSCAPE_MARK, liveLandscapeMark,
+                () -> hookLandscapeHighlightMark(classLoader));
+        registerFeature(GlassSettings.KEY_LIVE_LANDSCAPE_SIDEBAR, liveLandscapeSidebar, () -> {
             hookLandscapeRewardShortcuts(classLoader);
             hookLandscapeRightSidebar(classLoader);
+        });
+        registerFeature(GlassSettings.KEY_LIVE_RED_PACKET, liveRedPacket, () -> hookLiveRedPacket(classLoader));
+        registerFeature(GlassSettings.KEY_LIVE_WEEK_STAR, hideWeekStarEntries, () -> hookWeekStarBanner(classLoader));
+        registerFeature(GlassSettings.KEY_LIVE_AD_BANNER, isEnabled(GlassSettings.KEY_LIVE_AD_BANNER),
+                () -> hookNativeLiveAdBanner(classLoader));
+        registerFeature(GlassSettings.KEY_LIVE_AD_FLOAT, isEnabled(GlassSettings.KEY_LIVE_AD_FLOAT),
+                () -> hookNativeLiveAdFloat(classLoader));
+        registerFeature(GlassSettings.KEY_VIP_ADS, vipAds, () -> hookVipAdFilter(classLoader));
+        registerFeature(GlassSettings.KEY_VIP_4K, vip4k, () -> hookVip4KPlayback(classLoader));
+        HookStatus.record("daily_automation", HookStatus.WAITING, "等待虎牙主界面恢复后创建每日任务调度");
+    }
+
+    private void registerFeature(String feature, boolean enabled, Runnable install) {
+        if (!enabled) {
+            HookStatus.record(feature, HookStatus.DISABLED, "本次启动时功能开关关闭");
+            return;
         }
-        if (liveRedPacket) {
-            hookLiveRedPacket(classLoader);
-        }
-        if (hideWeekStarEntries) {
-            hookWeekStarBanner(classLoader);
-        }
-        if (isEnabled(GlassSettings.KEY_LIVE_AD_BANNER)) {
-            hookNativeLiveAdBanner(classLoader);
-        }
-        if (isEnabled(GlassSettings.KEY_LIVE_AD_FLOAT)) {
-            hookNativeLiveAdFloat(classLoader);
-        }
-        if (vipAds) {
-            hookVipAdFilter(classLoader);
-        }
-        if (vip4k) {
-            hookVip4KPlayback(classLoader);
-        }
+        HookRegistration registration = new HookRegistration();
+        hookRegistration.set(registration);
+        try { install.run(); }
+        catch (Throwable failure) { logFailure(failure); }
+        finally { hookRegistration.remove(); }
+        String state = registration.registered == 0 ? HookStatus.FAILED
+                : registration.failed == 0 ? HookStatus.REGISTERED : HookStatus.PARTIAL;
+        String reason = "已注册 " + registration.registered + " 个接口";
+        if (!registration.reason.isEmpty()) reason += "；" + registration.reason;
+        else if (registration.registered == 0) reason += "；未找到可注册的宿主接口";
+        HookStatus.record(feature, state, reason);
+    }
+
+    private HookBuilder trackedHook(java.lang.reflect.Executable target) {
+        HookBuilder delegate = hook(target);
+        return new HookBuilder() {
+            @Override public HookBuilder setPriority(int priority) { delegate.setPriority(priority); return this; }
+            @Override public HookBuilder setExceptionMode(ExceptionMode mode) { delegate.setExceptionMode(mode); return this; }
+            @Override public HookBuilder setId(String id) { delegate.setId(id); return this; }
+            @Override public HookHandle intercept(Hooker interceptor) {
+                HookHandle handle = delegate.intercept(interceptor);
+                HookRegistration registration = hookRegistration.get();
+                if (registration != null) registration.registered++;
+                return handle;
+            }
+        };
     }
 
     private void hookLiveMenu(ClassLoader loader) {
@@ -360,7 +392,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Method type = itemType.getMethod("getType");
             Method items = helper.getDeclaredMethod("getSettingItem",
                     loader.loadClass("androidx.fragment.app.FragmentActivity"));
-            hook(items).intercept(chain -> {
+            trackedHook(items).intercept(chain -> {
                 Object result = chain.proceed();
                 if (!(result instanceof List)) return result;
                 return LiveMenu.filter((List<?>) result, item -> {
@@ -384,7 +416,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Method componentId = itemType.getMethod("getComponentId");
             Method title = itemType.getMethod("getTitle");
             Method combine = fragment.getDeclaredMethod("combineCompsDataWithInsertData", List.class);
-            hook(combine).intercept(chain -> {
+            trackedHook(combine).intercept(chain -> {
                 Object result = chain.proceed();
                 if (!(result instanceof List)) return result;
                 Map<String, String> catalog = new LinkedHashMap<>();
@@ -486,10 +518,10 @@ public final class HuyaCompatEntry extends XposedModule {
                 }
                 return result;
             };
-            hook(onPageFinished).intercept(applyFilter);
+            trackedHook(onPageFinished).intercept(applyFilter);
             Method onPageCommitVisible = loader.loadClass("com.huya.hybrid.webview.HYWebView")
                     .getDeclaredMethod("onPageCommitVisible", String.class);
-            hook(onPageCommitVisible).intercept(applyFilter);
+            trackedHook(onPageCommitVisible).intercept(applyFilter);
         } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) {
             logFailure(failure);
         }
@@ -504,7 +536,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Method toBarItem = helper.getDeclaredMethod("k", tab);
             Method init = bar.getDeclaredMethod("init", List.class, skin, ColorStateList.class, boolean.class);
             Method update = bar.getDeclaredMethod("updateBarItem", List.class, int.class);
-            hook(toBarItem).intercept(chain -> {
+            trackedHook(toBarItem).intercept(chain -> {
                 Object item = chain.proceed();
                 // The helper sets h from HomeTab.getValue() before building the visual item.
                 GlassSettings.NavigationEntry entry = GlassSettings.NavigationEntry.forTab(
@@ -513,7 +545,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 return item;
             });
             for (Method method : new Method[]{init, update}) {
-                hook(method).intercept(chain -> {
+                trackedHook(method).intercept(chain -> {
                     Object result = chain.proceed();
                     updateNavigationBar(chain.getThisObject(), chain.getArg(0));
                     return result;
@@ -550,7 +582,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Method setNativeId = manager.getDeclaredMethod("setNativeId", View.class, String.class);
             Method pointerEvents = reactGroup.getDeclaredMethod("getPointerEvents");
             Object noPointerEvents = pointerEvents.getReturnType().getField("NONE").get(null);
-            hook(pointerEvents).intercept(chain -> hiddenNavigationViews.containsKey(chain.getThisObject())
+            trackedHook(pointerEvents).intercept(chain -> hiddenNavigationViews.containsKey(chain.getThisObject())
                     ? noPointerEvents : chain.proceed());
             View.OnAttachStateChangeListener attach = new View.OnAttachStateChangeListener() {
                 @Override public void onViewAttachedToWindow(View view) {
@@ -561,7 +593,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 @Override public void onViewDetachedFromWindow(View view) {
                 }
             };
-            hook(setNativeId).intercept(chain -> {
+            trackedHook(setNativeId).intercept(chain -> {
                 Object result = chain.proceed();
                 if (!reactGroup.isInstance(chain.getArg(0))) return result;
                 View view = (View) chain.getArg(0);
@@ -618,7 +650,7 @@ public final class HuyaCompatEntry extends XposedModule {
         try {
             Class<?> page = loader.loadClass("com.duowan.kiwi.my.MyRecordNew");
             Method create = page.getDeclaredMethod("onViewCreated", View.class, android.os.Bundle.class);
-            hook(create).intercept(chain -> {
+            trackedHook(create).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
                     addMineSettingsEntry((View) chain.getArg(0));
@@ -634,7 +666,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> creator = loader.loadClass("com.duowan.kiwi.my.utils.MyTabModuleViewCreator");
             Method render = creator.getDeclaredMethod("createByTemplateType", Context.class,
                     loader.loadClass("com.duowan.HUYA.MyTabModuleInfo"));
-            hook(render).intercept(chain -> {
+            trackedHook(render).intercept(chain -> {
                 Object module = chain.getArg(1);
                 Object filtered = filterNativeMineModule(module);
                 if (filtered == null) return new Pair<>(false, null);
@@ -648,7 +680,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> page = loader.loadClass("com.duowan.kiwi.my.MyRecordNew");
             Method render = page.getDeclaredMethod("createLizardModuleView", Context.class,
                     loader.loadClass("com.duowan.HUYA.DynamicItem"));
-            hook(render).intercept(chain -> {
+            trackedHook(render).intercept(chain -> {
                 Object module = chain.getArg(1);
                 if (module == null) return chain.proceed();
                 Object filtered = filterLizardMineModule(module);
@@ -815,7 +847,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 try {
                     Method click = classLoader.loadClass(name)
                             .getDeclaredMethod("onClickRateItem", infoType);
-                    hook(click).intercept(chain -> {
+                    trackedHook(click).intercept(chain -> {
                         if (!isSelectedQualityRow(chain.getThisObject(), chain.getArg(0), infoType)) {
                             qualitySession.manualSelection();
                             logInfo("manual quality selection; automatic selection cancelled");
@@ -829,12 +861,12 @@ public final class HuyaCompatEntry extends XposedModule {
 
             Class<?> channelType = classLoader.loadClass(
                     "com.duowan.kiwi.liveroom.ChannelPage");
-            hook(channelType.getDeclaredMethod("onCreate", android.os.Bundle.class))
+            trackedHook(channelType.getDeclaredMethod("onCreate", android.os.Bundle.class))
                     .intercept(chain -> {
                         onQualityRoomEntered(chain.getThisObject(), classLoader);
                         return chain.proceed();
                     });
-            hook(channelType.getDeclaredMethod("onNewIntent", android.content.Intent.class))
+            trackedHook(channelType.getDeclaredMethod("onNewIntent", android.content.Intent.class))
                     .intercept(chain -> {
                         onQualityRoomEntered(chain.getThisObject(), classLoader);
                         return chain.proceed();
@@ -843,7 +875,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.live.multiline.data.MultiLineData");
             Method setLineInfo = findMethod(lineDataType, "setMultiLineInfo", 3);
             if (setLineInfo != null) {
-                hook(setLineInfo).intercept(chain -> {
+                trackedHook(setLineInfo).intercept(chain -> {
                     int token = qualitySession.current();
                     Object result = chain.proceed();
                     scheduleQualityApply(classLoader, token);
@@ -878,7 +910,7 @@ public final class HuyaCompatEntry extends XposedModule {
         Class<?> holder = loader.loadClass(livePackage + "UniversalRoomItemViewHolder");
         Class<?> item = loader.loadClass("com.duowan.HUYA.UserRecItem");
         Method enter = binder.getDeclaredMethod("onPageEnter", int.class, holder, item, boolean.class);
-        hook(enter).intercept(chain -> {
+        trackedHook(enter).intercept(chain -> {
             try {
                 Object reference = field(chain.getThisObject(), "fragment");
                 Object fragment = reference instanceof WeakReference
@@ -1153,7 +1185,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> itemType = classLoader.loadClass("com.duowan.kiwi.popup.api.PopupItem");
             Method summary = itemType.getMethod("getSummary");
             Method filter = type.getDeclaredMethod("checkPlatformVipFilter", itemType);
-            hook(filter).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(filter).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object item = chain.getArg(0);
                 Object flag = item == null ? null
                         : field(summary.invoke(item), "iIsNoShowForPlatformVip");
@@ -1176,7 +1208,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Method active = type.getDeclaredMethod("isPlatformVipActive");
             // Use the existing member playback branch only inside the 4K helper.
             // Stream availability and CDN authentication still use Huya's data.
-            hook(active).setPriority(PRIORITY_HIGHEST).intercept(chain -> true);
+            trackedHook(active).setPriority(PRIORITY_HIGHEST).intercept(chain -> true);
             logInfo("hooked experimental 4K playback branch");
         } catch (Throwable throwable) {
             logFailure(throwable);
@@ -1191,7 +1223,7 @@ public final class HuyaCompatEntry extends XposedModule {
             if (filterList == null) {
                 return;
             }
-            hook(filterList).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(filterList).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 return filterImmerseAds(chain.proceed(), "immersive feed");
             });
             logInfo("hooked immersive recommendation feed ads");
@@ -1200,7 +1232,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.immersepage.impl.data.IImmerseDataManager$InertItemCallback");
             Method insertAd = type.getDeclaredMethod(
                     "insertAdIfNeed", int.class, ArrayList.class, List.class, callback);
-            hook(insertAd).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(insertAd).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 if (((List<?>) chain.getArg(1)).isEmpty()) return chain.proceed();
                 // Huya leaves the list and its callback untouched when there is no ad to insert.
                 logInfo("blocked immersive swipe ad insertion");
@@ -1214,7 +1246,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> adapter = classLoader.loadClass(
                     "com.duowan.kiwi.universalslide.impl.adapter.UniversalSlideAdapter");
             Method filter = adapter.getDeclaredMethod("filterSupportedItems", List.class);
-            hook(filter).setPriority(PRIORITY_HIGHEST).intercept(chain ->
+            trackedHook(filter).setPriority(PRIORITY_HIGHEST).intercept(chain ->
                     filterImmerseAds(chain.proceed(), "swipe list"));
             logInfo("hooked swipe list ad filter");
         } catch (Throwable throwable) {
@@ -1225,7 +1257,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.list.homepage.tab.recommend.BaseRecommendPresenter");
             Method gridItems = findMethod(type, "getGridGameCardItemList", 3);
             if (gridItems != null) {
-                hook(gridItems).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(gridItems).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object result = chain.proceed();
                     if (!(result instanceof List)) {
                         return result;
@@ -1290,7 +1322,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.adsplash.controller.AdRouter");
             Method route = findMethod(type, "isNeedShowAdSplash", 4);
             if (route != null) {
-                hook(route).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(route).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     // 6 is Huya's own "splash disabled" result. The caller still
                     // completes its normal NO_AD callbacks and opens the homepage.
                     logInfo("blocked splash before display");
@@ -1305,7 +1337,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> type = classLoader.loadClass("com.duowan.kiwi.ad.impl.HyAdModule");
             Method shield = findMethod(type, "isNeedShieldAdOutLivingRoom", 0);
             if (shield != null) {
-                hook(shield).setPriority(PRIORITY_HIGHEST).intercept(chain -> true);
+                trackedHook(shield).setPriority(PRIORITY_HIGHEST).intercept(chain -> true);
                 // The in-room shield also guards rewarded-ad requests, so leave it alone.
                 logInfo("enabled ordinary ad request shield");
             }
@@ -1316,7 +1348,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> type = classLoader.loadClass(
                     "com.duowan.kiwi.list.patface.chain.PatFaceInterceptorChain");
             Method proceed = type.getDeclaredMethod("proceed", int.class);
-            hook(proceed).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(proceed).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 // Stop before constructing or enqueuing the promotional dialog.
                 logInfo("blocked automatic promotion location=" + chain.getArg(0));
                 return false;
@@ -1330,7 +1362,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.list.homepage.tab.recommend.BaseRecommendPresenter");
             Method callback = findMethod(type, "onLiveListAdBack", 4);
             if (callback != null) {
-                hook(callback).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(callback).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     logInfo("blocked recommendation ad injection ad="
                             + field(chain.getArg(0), "iId"));
                     return null;
@@ -1339,7 +1371,7 @@ public final class HuyaCompatEntry extends XposedModule {
             }
             Method insertGrid = findMethod(type, "l0", 3);
             if (insertGrid != null) {
-                hook(insertGrid).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(insertGrid).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object result = chain.proceed();
                     Object output = chain.getArg(0);
                     if (!(output instanceof List)) {
@@ -1372,7 +1404,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> event = loader.loadClass(
                     "com.duowan.kiwi.livead.api.adplugin.event.IPresenterAdEvent$ShowNotLiveAdEvent");
             Method show = view.getDeclaredMethod("onShowStopLiveAdEvent", event);
-            hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 logInfo("blocked offline-room autoplay ad");
                 return null;
             });
@@ -1387,7 +1419,7 @@ public final class HuyaCompatEntry extends XposedModule {
                     "com.duowan.kiwi.list.homepage.tab.recommend.GameRecommendFragment");
             Class<?> mode = loader.loadClass("com.duowan.kiwi.listframe.RefreshListener$RefreshMode");
             Method endRefresh = fragment.getDeclaredMethod("endRefresh", List.class, mode, int.class);
-            hook(endRefresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(endRefresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object data = chain.getArg(0);
                 if (data instanceof List) {
                     List<Object> filtered = new ArrayList<>((List<?>) data);
@@ -1435,7 +1467,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> type = loader.loadClass("com.duowan.kiwi.livead.api.adbanner.view.AdLiveBannerView");
             Method show = type.getDeclaredMethod("showAd", List.class, Map.class);
             Method hide = type.getMethod("hideAd");
-            hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 hide.invoke(chain.getThisObject());
                 logInfo("blocked native live-room banner");
                 return false;
@@ -1452,7 +1484,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> liveAd = loader.loadClass("com.duowan.HUYA.LiveRoomAdvertise");
             Class<?> ad = loader.loadClass("com.duowan.kiwi.livead.api.adfloat.data.Advertisement");
             Method display = type.getDeclaredMethod("displayAdByMethod", liveAd, ad, long.class, Map.class);
-            hook(display).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(display).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 logInfo("blocked native live-room floating promotion");
                 return null;
             });
@@ -1463,7 +1495,7 @@ public final class HuyaCompatEntry extends XposedModule {
         try {
             Class<?> type = loader.loadClass("com.duowan.kiwi.universal.live.pubscreen.biz.UniversalLiveAdFloat");
             Method visibility = type.getDeclaredMethod("changeFloatAdVisibilityIfNeed", boolean.class);
-            hook(visibility).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(visibility).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 if (Boolean.TRUE.equals(chain.getArg(0))) {
                     logInfo("hid live-room floating ad");
                     return chain.proceed(new Object[]{false});
@@ -1483,7 +1515,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 Class<?> type = classLoader.loadClass(
                         "com.duowan.kiwi.universal.live.activitybar.banner.UniversalLiveBannerView");
                 Method setData = type.getDeclaredMethod("setData", List.class);
-                hook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object data = chain.getArg(0);
                     if (data instanceof List && !((List<?>) data).isEmpty()) {
                         logInfo("cleared live-room promotion banner");
@@ -1576,7 +1608,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 Method businessKey = itemType.getMethod("getBusinessKey");
                 for (String name : new String[]{"tryShowPopup", "tryPlaceholderPopup"}) {
                     Method show = type.getDeclaredMethod(name, itemType);
-                    hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    trackedHook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                         Object item = chain.getArg(0);
                         Object key = item == null ? null : businessKey.invoke(item);
                         if ("cardcollectionactivity_streamertrigger".equals(key)) {
@@ -1601,11 +1633,13 @@ public final class HuyaCompatEntry extends XposedModule {
                         "com.huya.kiwi.hyext.delegate.api.HYExtRightTopWindowModeManager");
                 Method create = findMethod(type, "createFloatWindowItemView", 5);
                 if (create != null) {
-                    hook(create).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-                        // Server-pushed activities have no opened mini-app fragment.
-                        if (chain.getArg(1) == null && chain.getArg(2) != null
+                    trackedHook(create).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                        Object fragment = chain.getArg(1);
+                        boolean mallPromotion = isMallPromotionMiniApp(fragment);
+                        if ((fragment == null || mallPromotion) && chain.getArg(2) != null
                                 && (campaigns || (landscapeSidebar && Boolean.TRUE.equals(chain.getArg(4))))) {
-                            logInfo("blocked server-pushed live-room activity window");
+                            logInfo(mallPromotion ? "blocked mall promotion miniapp window app=sbn47atc"
+                                    : "blocked server-pushed live-room activity window");
                             return null;
                         }
                         return chain.proceed();
@@ -1624,7 +1658,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 if (enqueue == null) {
                     return;
                 }
-                hook(enqueue).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(enqueue).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object id = chain.getArg(0);
                     if (id instanceof String && ((String) id).startsWith("floatball_ad_")) {
                         logInfo("blocked live-room floating ad before queueing");
@@ -1642,7 +1676,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 Class<?> type = classLoader.loadClass(
                         "com.duowan.kiwi.inputbar.api.view.entryview.ShoppingEntryView");
                 for (Constructor<?> constructor : type.getDeclaredConstructors()) {
-                    hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    trackedHook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                         Object result = chain.proceed();
                         Object target = chain.getThisObject();
                         if (target instanceof View) {
@@ -1695,7 +1729,7 @@ public final class HuyaCompatEntry extends XposedModule {
 
     private void hookRewardEntry(Class<?> type) {
         for (Constructor<?> constructor : type.getDeclaredConstructors()) {
-            hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object result = chain.proceed();
                 Object target = chain.getThisObject();
                 if (target instanceof View) {
@@ -1723,7 +1757,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> type = classLoader.loadClass(
                     "com.duowan.kiwi.universal.live.activitybar.banner.UniversalTaskBannerView");
             for (Constructor<?> constructor : type.getDeclaredConstructors()) {
-                hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object result = chain.proceed();
                     Object target = chain.getThisObject();
                     if (target instanceof View) {
@@ -1755,7 +1789,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> type = classLoader.loadClass(
                     "com.duowan.kiwi.livehighlightmark.impl.view.HighlightMarkView");
             Method setVisible = type.getDeclaredMethod("setVisible", boolean.class);
-            hook(setVisible).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(setVisible).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object result = chain.proceed();
                 if (chain.getThisObject() instanceof View) {
                     updateHighlightMarkVisibility((View) chain.getThisObject());
@@ -1763,7 +1797,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 return result;
             });
             for (Constructor<?> constructor : type.getDeclaredConstructors()) {
-                hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object result = chain.proceed();
                     Object target = chain.getThisObject();
                     if (target instanceof View) {
@@ -1799,7 +1833,7 @@ public final class HuyaCompatEntry extends XposedModule {
             if (reminder == null || setData == null) {
                 return;
             }
-            hook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(setData).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object data = chain.getArg(0);
                 if (!(data instanceof List) || !isLandscape(chain.getThisObject())) {
                     return chain.proceed();
@@ -1829,7 +1863,7 @@ public final class HuyaCompatEntry extends XposedModule {
         try {
             Class<?> type = classLoader.loadClass(className);
             for (Constructor<?> constructor : type.getDeclaredConstructors()) {
-                hook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(constructor).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Object result = chain.proceed();
                     Object target = chain.getThisObject();
                     if (target instanceof View) {
@@ -1922,7 +1956,7 @@ public final class HuyaCompatEntry extends XposedModule {
     }
 
     private void hookCampaignShortcuts(Method refresh, BiPredicate<Object, Object> isCampaign) {
-        hook(refresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+        trackedHook(refresh).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
             Object data = chain.getArg(0);
             if (!(data instanceof List)) {
                 return chain.proceed();
@@ -1936,6 +1970,16 @@ public final class HuyaCompatEntry extends XposedModule {
             logInfo("filtered live-room promotion entries via " + refresh.getName());
             return chain.proceed(new Object[]{filtered});
         });
+    }
+
+    private static boolean isMallPromotionMiniApp(Object fragment) {
+        if (fragment == null) return false;
+        try {
+            Object info = fragment.getClass().getMethod("getMiniAppInfo").invoke(fragment);
+            return info != null && "sbn47atc".equals(info.getClass().getMethod("getExtUuid").invoke(info));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            return false;
+        }
     }
 
     private static boolean isCampaignShortcutName(Object name) {
@@ -1993,7 +2037,7 @@ public final class HuyaCompatEntry extends XposedModule {
                             .equals(first.getName())) {
                         continue;
                     }
-                    hook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    trackedHook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                         Object input = chain.getArg(0);
                         if (input instanceof List) {
                             List<?> original = (List<?>) input;
@@ -2019,6 +2063,9 @@ public final class HuyaCompatEntry extends XposedModule {
                         return chain.proceed();
                     });
                     count++;
+                }
+                if (count == 0) {
+                    logFailure(new NoSuchMethodException(name + " list mutation interfaces"));
                 }
                 logInfo("hooked " + name + " mutations=" + count);
             } catch (Throwable throwable) {
@@ -2068,7 +2115,7 @@ public final class HuyaCompatEntry extends XposedModule {
             for (Method method : type.getDeclaredMethods()) {
                 if ("goVideoAdWithCallback".equals(method.getName())
                         || "lambda$onGetAdFail$2".equals(method.getName())) {
-                    hook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                    trackedHook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                         logInfo("request entry " + chain.getExecutable().getName());
                         return chain.proceed();
                     });
@@ -2076,7 +2123,7 @@ public final class HuyaCompatEntry extends XposedModule {
             }
             Method failed = findMethod(type, "onGetAdFail", 8);
             if (failed != null) {
-                hook(failed).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(failed).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     logInfo("ad request failed: code=" + chain.getArg(5)
                             + " reason=" + shortString(chain.getArg(6))
                             + " scene=" + shortString(chain.getArg(2))
@@ -2086,7 +2133,7 @@ public final class HuyaCompatEntry extends XposedModule {
             }
             Method parsed = findMethod(type, "parseAdResult", 12);
             if (parsed != null) {
-                hook(parsed).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(parsed).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     logInfo("parseAdResult: ad="
                             + field(chain.getArg(3), "id")
                             + " taskResult=" + field(chain.getArg(4), "iRet")
@@ -2116,7 +2163,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 }
 
                 boolean custom = "openCustomAd".equals(name);
-                hook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(show).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     String adId = readAdId(
                             chain.getArg(0),
                             custom || banner ? "customAdId" : "rewardedVideoAdId");
@@ -2159,9 +2206,126 @@ public final class HuyaCompatEntry extends XposedModule {
                 setVisibility = type.getDeclaredMethod("shouldShowGuideDialog", boolean.class);
                 shouldShow = type.getDeclaredMethod("shouldShowGuideDialog");
             }
-            hook(setVisibility).intercept(chain -> chain.proceed(new Object[]{false}));
-            hook(shouldShow).intercept(chain -> false);
+            trackedHook(setVisibility).intercept(chain -> chain.proceed(new Object[]{false}));
+            trackedHook(shouldShow).intercept(chain -> false);
             logInfo("hooked startup guide display");
+        } catch (Throwable failure) {
+            logFailure(failure);
+        }
+    }
+
+    private void hookTaskCenterRewards(ClassLoader classLoader) {
+        try {
+            Class<?> type = classLoader.loadClass("com.huya.kiwi.hyweb.modules.HYWebAd");
+            Method click = findMethod(type, "realClick", 6);
+            if (click == null) return;
+            Method getWebView = type.getMethod("getWebView");
+            Class<?> react = classLoader.loadClass("com.huya.hybrid.react.utils.ReactHelper");
+            Method parseBoolean = react.getMethod(
+                    "webSafelyParseBoolean", Object.class, String.class, boolean.class);
+            Method parseInt = react.getMethod(
+                    "webSafelyParseInt", Object.class, String.class, int.class);
+            Class<?> gsonType = classLoader.loadClass("com.google.gson.Gson");
+            Object gson = gsonType.getConstructor().newInstance();
+            Method toJson = gsonType.getMethod("toJson", Object.class);
+            Class<?> managerType = classLoader.loadClass(AWARD_MANAGER_CLASS);
+            Object companion = managerType.getField("Companion").get(null);
+            Object manager = companion.getClass().getMethod("getInstance").invoke(companion);
+            Class<?> listenerType = classLoader.loadClass(
+                    "com.duowan.kiwi.ad.api.IHyLotteryAdHelper$HyRewardAdListener");
+            Method award = managerType.getMethod("onAwardCommonRewardAdTask", String.class,
+                    Map.class, int.class, String.class, String.class, listenerType);
+            Constructor<?> event = classLoader.loadClass(
+                    "com.duowan.kiwi.crossplatform.base.webview.event.WebNativeEventEntity")
+                    .getConstructor(String.class, Object.class);
+            Method send = classLoader.loadClass("com.duowan.ark.ArkUtils")
+                    .getMethod("send", Object.class);
+            Set<String> pending = Collections.synchronizedSet(new HashSet<>());
+
+            // realClick runs only after Huya accepts the original server click check.
+            trackedHook(click).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                Object params = chain.getArg(0);
+                String taskId = readAdId(params, "adTaskId");
+                String uniqId = readAdId(params, "adTaskUniqId");
+                int duration;
+                String extras;
+                try {
+                    Object webView = getWebView.invoke(chain.getThisObject());
+                    String url = webView == null ? null
+                            : (String) webView.getClass().getMethod("getUrl").invoke(webView);
+                    duration = (Integer) parseInt.invoke(null, params, "adTaskDuration", 0);
+                    if (!isEnabled(GlassSettings.KEY_REWARDS)
+                            || url == null || !TASK_CENTER_URL.equals(url.split("[?#]", 2)[0])
+                            || !Boolean.TRUE.equals(parseBoolean.invoke(
+                                    null, params, "adTaskCalcUseNative", false))
+                            || (Integer) parseInt.invoke(null, params, "adTaskRewardClickCheck", 0) != 1
+                            || (Integer) parseInt.invoke(null, params, "adTaskRewardReqType", 0) != 2
+                            || (Integer) parseInt.invoke(null, params, "adTaskRewardedNotify", 0) != 2
+                            || taskId == null || taskId.isEmpty()
+                            || uniqId == null || uniqId.isEmpty() || duration <= 0) {
+                        return chain.proceed();
+                    }
+                    extras = (String) toJson.invoke(gson, chain.getArg(3));
+                } catch (Throwable failure) {
+                    logFailure(failure);
+                    return chain.proceed();
+                }
+                callSuccess(chain.getArg(5));
+                if (!pending.add(taskId)) return null;
+                AtomicBoolean done = new AtomicBoolean();
+                try {
+                    Object listener = Proxy.newProxyInstance(classLoader,
+                            new Class<?>[]{listenerType}, (proxy, method, args) -> {
+                        switch (method.getName()) {
+                            case "equals": return proxy == args[0];
+                            case "hashCode": return System.identityHashCode(proxy);
+                            case "toString": return "HuyaPlusTaskRewardListener";
+                            case "onError":
+                                if (done.compareAndSet(false, true)) {
+                                    pending.remove(taskId);
+                                    logInfo("task-center reward request failed");
+                                }
+                                return null;
+                            case "onRewarded":
+                                if (!done.compareAndSet(false, true)) return null;
+                                if (!Boolean.TRUE.equals(args[0])) {
+                                    pending.remove(taskId);
+                                    logInfo("task-center reward rejected");
+                                    return null;
+                                }
+                                // The receipt is the second argument; the third is only toast text.
+                                getMainHandler().post(() -> {
+                                    try {
+                                        Map<String, Object> data = new HashMap<>();
+                                        data.put("duration", duration);
+                                        data.put("uniqId", uniqId);
+                                        data.put("ext", toJson.invoke(gson, args[1]));
+                                        send.invoke(null, event.newInstance("HYAdTaskDurationExceed", data));
+                                        Map<String, Object> end = new HashMap<>();
+                                        end.put("duration", duration);
+                                        end.put("uniqId", uniqId);
+                                        send.invoke(null, event.newInstance("HYAdTaskEnd", end));
+                                        logInfo("task-center reward confirmed by server");
+                                    } catch (Throwable failure) {
+                                        logFailure(failure);
+                                    } finally {
+                                        pending.remove(taskId);
+                                    }
+                                });
+                                return null;
+                            default: return null;
+                        }
+                    });
+                    award.invoke(manager, taskId, null, duration, extras, chain.getArg(4), listener);
+                    logInfo("submitted task-center timed reward");
+                } catch (Throwable failure) {
+                    done.set(true);
+                    pending.remove(taskId);
+                    logFailure(failure);
+                }
+                return null;
+            });
+            logInfo("hooked task-center timed rewards after click validation");
         } catch (Throwable failure) {
             logFailure(failure);
         }
@@ -2176,7 +2340,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 return;
             }
 
-            hook(request).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(request).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object[] args = chain.getArgs().toArray();
                 if (args.length < 6 || args[4] == null) {
                     return chain.proceed();
@@ -2202,7 +2366,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Class<?> type = classLoader.loadClass(AWARD_MANAGER_CLASS);
             Method award = findMethod(type, "awardAdTaskIfNeed", 6);
             if (award != null) {
-                hook(award).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+                trackedHook(award).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                     Log.i(TAG, "awardAdTaskIfNeed #" + AWARD_CALLS.incrementAndGet()
                             + " " + summarizeAwardArgs(chain.getArgs().toArray()));
                     return chain.proceed();
@@ -2226,7 +2390,7 @@ public final class HuyaCompatEntry extends XposedModule {
             Log.w(TAG, "award method not found " + name + "/" + parameterCount);
             return;
         }
-        hook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+        trackedHook(method).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
             Log.i(TAG, name + " #" + AWARD_CALLS.incrementAndGet()
                     + " " + summarizeAwardArgs(chain.getArgs().toArray()));
             return chain.proceed();
@@ -2242,7 +2406,7 @@ public final class HuyaCompatEntry extends XposedModule {
                 return;
             }
 
-            hook(visible).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
+            trackedHook(visible).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
                 Object result = chain.proceed();
                 Object fragment = chain.getThisObject();
                 if (fragment == null) {
@@ -2301,12 +2465,15 @@ public final class HuyaCompatEntry extends XposedModule {
         }
     }
 
-    private static Method findMethod(Class<?> type, String name, int parameterCount) {
+    private Method findMethod(Class<?> type, String name, int parameterCount) {
         for (Method method : type.getDeclaredMethods()) {
             if (name.equals(method.getName())
                     && method.getParameterCount() == parameterCount) {
                 return method;
             }
+        }
+        if (hookRegistration.get() != null) {
+            logFailure(new NoSuchMethodException(type.getName() + "." + name + "/" + parameterCount));
         }
         return null;
     }
@@ -2450,6 +2617,11 @@ public final class HuyaCompatEntry extends XposedModule {
     }
 
     private void logFailure(Throwable throwable) {
+        HookRegistration registration = hookRegistration.get();
+        if (registration != null) {
+            registration.failed++;
+            registration.reason = throwable.getClass().getSimpleName() + ": " + throwable.getMessage();
+        }
         log(Log.ERROR, TAG, "hook failure", throwable);
     }
 
